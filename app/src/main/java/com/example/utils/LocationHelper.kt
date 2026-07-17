@@ -150,7 +150,7 @@ object LocationHelper {
     }
   }
 
-  fun startPeriodicUpdates(context: Context, scope: CoroutineScope, intervalMs: Long = 30_000L) {
+  fun startPeriodicUpdates(context: Context, scope: CoroutineScope, intervalMs: Long = 300_000L) {
     stopPeriodicUpdates()
     Logger.i(TAG, "startPeriodicUpdates — interval=${intervalMs}ms")
     periodicJob = scope.launch(Dispatchers.IO) {
@@ -159,7 +159,7 @@ object LocationHelper {
         if (loc != null) {
           _latestLocation.value = loc
           Logger.i(TAG, "Periodic location update: lat=${loc.latitude} lng=${loc.longitude}")
-          FirestoreSync.reportLocation(loc)
+          FirestoreSync.updateDeviceLocation(loc)
         } else {
           Logger.w(TAG, "Periodic location update — no location available")
         }

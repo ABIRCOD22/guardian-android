@@ -100,6 +100,26 @@ object FirestoreSync {
     }
   }
 
+  // Lightweight location write — ONLY to user doc (1 write, for admin map)
+  suspend fun updateDeviceLocation(location: DeviceLocation) {
+    Logger.d(TAG, "updateDeviceLocation lat=${location.latitude} lng=${location.longitude}")
+    try {
+      val ctx = contextRef ?: return
+      val deviceId = getDeviceId(ctx)
+      val data = hashMapOf<String, Any>(
+        "lastLatitude" to location.latitude,
+        "lastLongitude" to location.longitude,
+        "lastActive" to System.currentTimeMillis()
+      )
+      db.collection("users").document(deviceId)
+        .set(data, SetOptions.merge())
+        .await()
+      Logger.d(TAG, "User doc location updated (1 write)")
+    } catch (e: Exception) {
+      Logger.e(TAG, "updateDeviceLocation failed", e)
+    }
+  }
+
   // Context reference for reportLocation
   private var contextRef: Context? = null
   fun setContext(context: Context) { contextRef = context }

@@ -31,6 +31,7 @@ object Logger {
   private var contextRef: Context? = null
   private var deviceName: String = ""
   private var deviceId: String = ""
+  private var lastRemoteLogMs = 0L
 
   fun init(context: Context, enableRemote: Boolean = false) {
     contextRef = context
@@ -64,8 +65,12 @@ object Logger {
       LogLevel.ERROR -> Log.e(t, fullMsg)
       LogLevel.ASSERT -> Log.wtf(t, fullMsg)
     }
-    if (remoteLoggingEnabled) {
-      logToFirestore(level, prefix, msg, tr)
+    if (remoteLoggingEnabled && level >= LogLevel.WARN) {
+      val now = System.currentTimeMillis()
+      if (now - lastRemoteLogMs > 5000L) {
+        lastRemoteLogMs = now
+        logToFirestore(level, prefix, msg, tr)
+      }
     }
   }
 
