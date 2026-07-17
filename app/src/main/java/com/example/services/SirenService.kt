@@ -21,8 +21,25 @@ import androidx.core.app.NotificationCompat
 import com.example.R
 import com.example.utils.AlarmHelper
 import com.example.utils.Constants
+import com.example.utils.Logger
 
 class SirenService : Service() {
+  companion object {
+    private const val TAG = "SirenService"
+    private const val CHANNEL_ID = "sp_siren_channel"
+    private const val NOTIFICATION_ID = 2001
+
+    fun start(context: Context) {
+      Logger.i(TAG, "start — starting SirenService foreground")
+      val intent = Intent(context, SirenService::class.java)
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        context.startForegroundService(intent)
+      } else {
+        context.startService(intent)
+      }
+    }
+  }
+
   private var mediaPlayer: MediaPlayer? = null
   private var vibrator: Vibrator? = null
   private val originalVolumes = IntArray(5) { 0 }
@@ -41,12 +58,15 @@ class SirenService : Service() {
 
   override fun onCreate() {
     super.onCreate()
+    Logger.logLifecycle(TAG, "onCreate — assigning sirenService")
     AlarmHelper.sirenService = this
     createNotificationChannel()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    Logger.i(TAG, "onStartCommand action=${intent?.action} flags=$flags startId=$startId")
     if (intent?.action == Constants.ACTION_SILENCE_SIREN) {
+      Logger.i(TAG, "ACTION_SILENCE_SIREN — stopping siren")
       stopSirenInternal()
       stopSelf()
       return START_NOT_STICKY
@@ -54,17 +74,20 @@ class SirenService : Service() {
 
     val notification = buildNotification()
     startForeground(NOTIFICATION_ID, notification)
+    Logger.i(TAG, "Foreground notification posted, starting siren")
     startSiren()
     return START_STICKY
   }
 
   private fun startSiren() {
+    Logger.i(TAG, "startSiren — maxing volumes and requesting audio focus")
     stopSirenInternal()
     try {
       val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
       volumeStreams.forEachIndexed { i, stream ->
         originalVolumes[i] = audioManager.getStreamVolume(stream)
         audioManager.setStreamVolume(stream, audioManager.getStreamMaxVolume(stream), 0)
+        Logger.d(TAG, "Volume stream $stream maxed (original=${originalVolumes[i]})")
       }
 
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -85,6 +108,7 @@ class SirenService : Service() {
           AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
       }
 
+      Logger.i(TAG, "Creating MediaPlayer for siren audio")
       mediaPlayer = MediaPlayer.create(this, R.raw.siren).apply {
         setAudioAttributes(
           AudioAttributes.Builder()
@@ -94,11 +118,16 @@ class SirenService : Service() {
         )
         isLooping = true
         start()
+        Logger.i(TAG, "MediaPlayer started (looping=${isLooping})")
+      }
+      if (mediaPlayer == null) {
+        Logger.e(TAG, "MediaPlayer.create returned null — siren audio may not play", null)
       }
 
       startVolumeGuard()
+      Logger.i(TAG, "Siren started successfully")
     } catch (e: Exception) {
-      android.util.Log.e("SirenService", "Failed to start siren", e)
+      Logger.e(TAG, "Failed to start siren audio", e)
     }
 
     try {
@@ -117,19 +146,25 @@ class SirenService : Service() {
         @Suppress("DEPRECATION")
         vibrator?.vibrate(longArrayOf(0, 1000, 500, 1000, 500, 1000), 0)
       }
-    } catch (_: Exception) {}
+      Logger.i(TAG, "Vibrator started")
+    } catch (e: Exception) {
+      Logger.e(TAG, "Failed to start vibrator", e)
+    }
   }
 
   override fun onDestroy() {
+    Logger.logLifecycle(TAG, "onDestroy")
     if (AlarmHelper.sirenService === this) {
       AlarmHelper.sirenService = null
+      Logger.d(TAG, "Cleared sirenService reference")
     }
     stopSirenInternal()
-    try { stopForeground(true) } catch (_: Exception) {}
+    try { stopForeground(true) } catch (e: Exception) { Logger.e(TAG, "Error stopping foreground", e) }
     super.onDestroy()
   }
 
   private fun startVolumeGuard() {
+    Logger.i(TAG, "startVolumeGuard — starting volume guard thread")
     volumeGuardThread = HandlerThread("SirenVolumeGuard").apply { start() }
     volumeGuardHandler = Handler(volumeGuardThread!!.looper)
     volumeGuardHandler?.post(object : Runnable {
@@ -138,19 +173,26 @@ class SirenService : Service() {
           val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return@run
           for (stream in volumeStreams) {
             val max = am.getStreamMaxVolume(stream)
-            if (am.getStreamVolume(stream) < max) {
+            val current = am.getStreamVolume(stream)
+            if (current < max) {
               am.setStreamVolume(stream, max, 0)
+              Logger.d(TAG, "Volume guard forced stream=$stream from $current to $max")
             }
           }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+          Logger.e(TAG, "Volume guard iteration error", e)
+        }
         if (mediaPlayer != null) {
           volumeGuardHandler?.postDelayed(this, 100)
+        } else {
+          Logger.d(TAG, "Volume guard loop stopping (mediaPlayer is null)")
         }
       }
     })
   }
 
   private fun stopVolumeGuard() {
+    Logger.d(TAG, "stopVolumeGuard")
     volumeGuardHandler?.removeCallbacksAndMessages(null)
     volumeGuardHandler = null
     volumeGuardThread?.quitSafely()
@@ -158,20 +200,28 @@ class SirenService : Service() {
   }
 
   fun stopSirenNow() {
+    Logger.i(TAG, "stopSirenNow — external stop request")
     stopSirenInternal()
-    try { stopForeground(true) } catch (_: Exception) {}
+    try { stopForeground(true) } catch (e: Exception) { Logger.e(TAG, "Error stopping foreground in stopSirenNow", e) }
     stopSelf()
   }
 
   private fun stopSirenInternal() {
+    Logger.d(TAG, "stopSirenInternal")
     stopVolumeGuard()
     try {
       mediaPlayer?.apply {
-        if (isPlaying) stop()
+        if (isPlaying) {
+          stop()
+          Logger.d(TAG, "MediaPlayer stopped")
+        }
         release()
+        Logger.d(TAG, "MediaPlayer released")
       }
       mediaPlayer = null
-    } catch (_: Exception) {}
+    } catch (e: Exception) {
+      Logger.e(TAG, "Error stopping/releasing MediaPlayer", e)
+    }
 
     try {
       val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -184,19 +234,27 @@ class SirenService : Service() {
         audioManager?.abandonAudioFocus(null)
       }
       audioFocusRequest = null
-    } catch (_: Exception) {}
+    } catch (e: Exception) {
+      Logger.e(TAG, "Error abandoning audio focus", e)
+    }
 
     try {
       vibrator?.cancel()
       vibrator = null
-    } catch (_: Exception) {}
+      Logger.d(TAG, "Vibrator cancelled")
+    } catch (e: Exception) {
+      Logger.e(TAG, "Error cancelling vibrator", e)
+    }
 
     try {
       val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
       volumeStreams.forEachIndexed { i, stream ->
         audioManager.setStreamVolume(stream, originalVolumes[i], 0)
+        Logger.d(TAG, "Volume stream $stream restored to ${originalVolumes[i]}")
       }
-    } catch (_: Exception) {}
+    } catch (e: Exception) {
+      Logger.e(TAG, "Error restoring original volumes", e)
+    }
   }
 
   private fun createNotificationChannel() {
@@ -221,19 +279,5 @@ class SirenService : Service() {
       .setSilent(true)
       .setOngoing(true)
       .build()
-  }
-
-  companion object {
-    private const val CHANNEL_ID = "sp_siren_channel"
-    private const val NOTIFICATION_ID = 2001
-
-    fun start(context: Context) {
-      val intent = Intent(context, SirenService::class.java)
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        context.startForegroundService(intent)
-      } else {
-        context.startService(intent)
-      }
-    }
   }
 }

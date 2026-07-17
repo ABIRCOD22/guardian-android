@@ -13,6 +13,7 @@ import com.example.utils.AlarmHelper
 import com.example.utils.Constants
 import com.example.utils.FirestoreSync
 import com.example.utils.LocationHelper
+import com.example.utils.Logger
 import com.example.utils.PermissionManager
 import com.example.utils.PinManager
 import com.example.ui.components.PinKeypad
@@ -107,25 +108,31 @@ enum class GuardianScreen {
 
 @Composable
 fun GuardianApp() {
+  val tag = "GuardianApp"
   var currentScreen by remember { mutableStateOf(GuardianScreen.SPLASH) }
   val context = LocalContext.current
   val prefs = context.getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
   var setupComplete by remember { mutableStateOf(prefs.getBoolean("setup_complete", false)) }
 
   LaunchedEffect(Unit) {
+    Logger.init(context, enableRemote = true)
+    Logger.i(tag, "App launched — Logger initialized, refreshing FCM token")
     com.example.services.FirebaseMessagingService.refreshToken()
   }
   val toggleAlarm: () -> Unit = {
     try {
       if (AlarmHelper.isArmed) {
+        Logger.i(tag, "toggleAlarm — disarming system")
         AlarmHelper.isArmed = false
         prefs.edit().putBoolean("protection_active", false).apply()
         kotlinx.coroutines.MainScope().launch {
           val loc = LocationHelper.getCurrentLocation(context)
           FirestoreSync.updateAlarmStatus(context, false, loc)
+          Logger.i(tag, "Alarm status updated to disarmed in Firestore")
         }
         android.widget.Toast.makeText(context, "System disarmed", android.widget.Toast.LENGTH_SHORT).show()
       } else {
+        Logger.i(tag, "toggleAlarm — arming system via AlarmOverlayActivity armOnly")
         val intent = Intent(context, com.example.ui.alarm.AlarmOverlayActivity::class.java).apply {
           putExtra(Constants.EXTRA_ARM_ONLY, true)
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -133,12 +140,14 @@ fun GuardianApp() {
         context.startActivity(intent)
       }
     } catch (e: Exception) {
+      Logger.e(tag, "toggleAlarm failed", e)
       android.widget.Toast.makeText(context, "Arm failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
     }
   }
 
   LaunchedEffect(AlarmHelper.isArmed) {
     if (AlarmHelper.isArmed) {
+      Logger.i(tag, "isArmed became true — starting ProtectionService")
       prefs.edit().putBoolean("protection_active", true).apply()
       val serviceIntent = Intent(context, ProtectionService::class.java).apply {
         action = ProtectionService.ACTION_START
@@ -150,12 +159,15 @@ fun GuardianApp() {
       }
       val loc = LocationHelper.getLastKnownLocation(context)
       FirestoreSync.updateAlarmStatus(context, true, loc)
+      Logger.i(tag, "ProtectionService started, alarm status reported")
     } else {
+      Logger.i(tag, "isArmed became false — stopping ProtectionService")
       prefs.edit().putBoolean("protection_active", false).apply()
       val stopIntent = Intent(context, ProtectionService::class.java).apply {
         action = ProtectionService.ACTION_STOP
       }
       context.stopService(stopIntent)
+      Logger.i(tag, "ProtectionService stopped")
     }
   }
 
@@ -180,93 +192,108 @@ fun GuardianApp() {
     ) { screen ->
       when (screen) {
         GuardianScreen.SPLASH -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: SPLASH") }
           SplashScreen(onTimeout = {
+            Logger.i(tag, "Splash timeout — navigating to ${if (setupComplete) "HOME" else "ONBOARDING"}")
             currentScreen = if (setupComplete) GuardianScreen.HOME else GuardianScreen.ONBOARDING
           })
         }
         GuardianScreen.ONBOARDING -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: ONBOARDING") }
           OnboardingScreen(
-            onContinue = { currentScreen = GuardianScreen.LOGIN },
-            onSkip = { currentScreen = GuardianScreen.LOGIN }
+            onContinue = { Logger.i(tag, "Onboarding continue -> LOGIN"); currentScreen = GuardianScreen.LOGIN },
+            onSkip = { Logger.i(tag, "Onboarding skip -> LOGIN"); currentScreen = GuardianScreen.LOGIN }
           )
         }
         GuardianScreen.LOGIN -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: LOGIN") }
           LoginScreen(
             email = emailInput,
             password = passwordInput,
             onEmailChange = { emailInput = it },
             onPasswordChange = { passwordInput = it },
-            onLoginSuccess = { currentScreen = GuardianScreen.PERMISSION_NOTIFICATION }
+            onLoginSuccess = { Logger.i(tag, "Login success -> PERMISSION_NOTIFICATION"); currentScreen = GuardianScreen.PERMISSION_NOTIFICATION }
           )
         }
         GuardianScreen.PERMISSION_NOTIFICATION -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PERMISSION_NOTIFICATION") }
           PermissionNotificationScreen(
-            onGranted = { currentScreen = GuardianScreen.PERMISSION_LOCATION },
-            onSkip = { currentScreen = GuardianScreen.HOME },
-            onBack = { currentScreen = GuardianScreen.LOGIN }
+            onGranted = { Logger.i(tag, "Notification permission granted -> PERMISSION_LOCATION"); currentScreen = GuardianScreen.PERMISSION_LOCATION },
+            onSkip = { Logger.i(tag, "Notification permission skipped -> HOME"); currentScreen = GuardianScreen.HOME },
+            onBack = { Logger.i(tag, "Notification permission back -> LOGIN"); currentScreen = GuardianScreen.LOGIN }
           )
         }
         GuardianScreen.PERMISSION_LOCATION -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PERMISSION_LOCATION") }
           PermissionLocationScreen(
-            onGranted = { currentScreen = GuardianScreen.PERMISSION_OVERLAY },
-            onSkip = { currentScreen = GuardianScreen.HOME },
-            onBack = { currentScreen = GuardianScreen.PERMISSION_NOTIFICATION }
+            onGranted = { Logger.i(tag, "Location permission granted -> PERMISSION_OVERLAY"); currentScreen = GuardianScreen.PERMISSION_OVERLAY },
+            onSkip = { Logger.i(tag, "Location permission skipped -> HOME"); currentScreen = GuardianScreen.HOME },
+            onBack = { Logger.i(tag, "Location permission back -> PERMISSION_NOTIFICATION"); currentScreen = GuardianScreen.PERMISSION_NOTIFICATION }
           )
         }
         GuardianScreen.PERMISSION_OVERLAY -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PERMISSION_OVERLAY") }
           PermissionOverlayScreen(
-            onGranted = { currentScreen = GuardianScreen.PERMISSION_SMS },
-            onSkip = { currentScreen = GuardianScreen.HOME },
-            onBack = { currentScreen = GuardianScreen.PERMISSION_LOCATION }
+            onGranted = { Logger.i(tag, "Overlay permission granted -> PERMISSION_SMS"); currentScreen = GuardianScreen.PERMISSION_SMS },
+            onSkip = { Logger.i(tag, "Overlay permission skipped -> HOME"); currentScreen = GuardianScreen.HOME },
+            onBack = { Logger.i(tag, "Overlay permission back -> PERMISSION_LOCATION"); currentScreen = GuardianScreen.PERMISSION_LOCATION }
           )
         }
         GuardianScreen.PERMISSION_SMS -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PERMISSION_SMS") }
           PermissionSmsScreen(
-            onGranted = { currentScreen = GuardianScreen.PERMISSION_ACCESSIBILITY },
-            onSkip = { currentScreen = GuardianScreen.HOME },
-            onBack = { currentScreen = GuardianScreen.PERMISSION_OVERLAY }
+            onGranted = { Logger.i(tag, "SMS permission granted -> PERMISSION_ACCESSIBILITY"); currentScreen = GuardianScreen.PERMISSION_ACCESSIBILITY },
+            onSkip = { Logger.i(tag, "SMS permission skipped -> HOME"); currentScreen = GuardianScreen.HOME },
+            onBack = { Logger.i(tag, "SMS permission back -> PERMISSION_OVERLAY"); currentScreen = GuardianScreen.PERMISSION_OVERLAY }
           )
         }
         GuardianScreen.PERMISSION_ACCESSIBILITY -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PERMISSION_ACCESSIBILITY") }
           PermissionAccessibilityScreen(
-            onGranted = { currentScreen = GuardianScreen.PERMISSION_DEVICE_ADMIN },
-            onSkip = { currentScreen = GuardianScreen.HOME },
-            onBack = { currentScreen = GuardianScreen.PERMISSION_SMS }
+            onGranted = { Logger.i(tag, "Accessibility permission granted -> PERMISSION_DEVICE_ADMIN"); currentScreen = GuardianScreen.PERMISSION_DEVICE_ADMIN },
+            onSkip = { Logger.i(tag, "Accessibility permission skipped -> HOME"); currentScreen = GuardianScreen.HOME },
+            onBack = { Logger.i(tag, "Accessibility permission back -> PERMISSION_SMS"); currentScreen = GuardianScreen.PERMISSION_SMS }
           )
         }
         GuardianScreen.PERMISSION_DEVICE_ADMIN -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PERMISSION_DEVICE_ADMIN") }
           PermissionDeviceAdminScreen(
-            onGranted = { currentScreen = GuardianScreen.PERMISSION_BATTERY_OPT },
-            onSkip = { currentScreen = GuardianScreen.HOME },
-            onBack = { currentScreen = GuardianScreen.PERMISSION_ACCESSIBILITY }
+            onGranted = { Logger.i(tag, "Device admin granted -> PERMISSION_BATTERY_OPT"); currentScreen = GuardianScreen.PERMISSION_BATTERY_OPT },
+            onSkip = { Logger.i(tag, "Device admin skipped -> HOME"); currentScreen = GuardianScreen.HOME },
+            onBack = { Logger.i(tag, "Device admin back -> PERMISSION_ACCESSIBILITY"); currentScreen = GuardianScreen.PERMISSION_ACCESSIBILITY }
           )
         }
         GuardianScreen.PERMISSION_BATTERY_OPT -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PERMISSION_BATTERY_OPT") }
           PermissionBatteryScreen(
-            onGranted = { currentScreen = GuardianScreen.PERMISSION_COMPLETE },
-            onSkip = { currentScreen = GuardianScreen.HOME },
-            onBack = { currentScreen = GuardianScreen.PERMISSION_DEVICE_ADMIN }
+            onGranted = { Logger.i(tag, "Battery opt granted -> PERMISSION_COMPLETE"); currentScreen = GuardianScreen.PERMISSION_COMPLETE },
+            onSkip = { Logger.i(tag, "Battery opt skipped -> HOME"); currentScreen = GuardianScreen.HOME },
+            onBack = { Logger.i(tag, "Battery opt back -> PERMISSION_DEVICE_ADMIN"); currentScreen = GuardianScreen.PERMISSION_DEVICE_ADMIN }
           )
         }
         GuardianScreen.PERMISSION_COMPLETE -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PERMISSION_COMPLETE") }
           SetupCompleteScreen(
             onContinue = {
+              Logger.i(tag, "Setup complete — saving and navigating to HOME")
               prefs.edit().putBoolean("setup_complete", true).apply()
               setupComplete = true
               currentScreen = GuardianScreen.HOME
             },
-            onBack = { currentScreen = GuardianScreen.PERMISSION_BATTERY_OPT }
+            onBack = { Logger.i(tag, "Setup complete back -> PERMISSION_BATTERY_OPT"); currentScreen = GuardianScreen.PERMISSION_BATTERY_OPT }
           )
         }
         GuardianScreen.HOME -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: HOME") }
           HomeScreen(
             isAlarmActive = AlarmHelper.isArmed,
             onToggleAlarm = toggleAlarm,
-            onNavigateToProfile = { currentScreen = GuardianScreen.PROFILE },
-            onNavigateToPinSetup = { currentScreen = GuardianScreen.SETUP_PIN }
+            onNavigateToProfile = { Logger.i(tag, "Home -> PROFILE"); currentScreen = GuardianScreen.PROFILE },
+            onNavigateToPinSetup = { Logger.i(tag, "Home -> SETUP_PIN"); currentScreen = GuardianScreen.SETUP_PIN }
           )
         }
         GuardianScreen.PROFILE -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: PROFILE") }
           ProfileScreen(
             biometricEnabled = biometricEnabled,
             twoFactorEnabled = twoFactorEnabled,
@@ -275,15 +302,16 @@ fun GuardianApp() {
             onTwoFactorToggle = { twoFactorEnabled = it },
             onAlertConfigToggle = { alertConfigEnabled = it },
             onLockTriggered = toggleAlarm,
-            onLogout = { currentScreen = GuardianScreen.LOGIN },
-            onNavigateToHome = { currentScreen = GuardianScreen.HOME }
+            onLogout = { Logger.i(tag, "Profile logout -> LOGIN"); currentScreen = GuardianScreen.LOGIN },
+            onNavigateToHome = { Logger.i(tag, "Profile -> HOME"); currentScreen = GuardianScreen.HOME }
           )
         }
         GuardianScreen.SETUP_PIN -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: SETUP_PIN") }
           PermissionPinSetupScreen(
-            onComplete = { currentScreen = GuardianScreen.HOME },
-            onSkip = { currentScreen = GuardianScreen.HOME },
-            onBack = { currentScreen = GuardianScreen.HOME }
+            onComplete = { Logger.i(tag, "PIN setup complete -> HOME"); currentScreen = GuardianScreen.HOME },
+            onSkip = { Logger.i(tag, "PIN setup skip -> HOME"); currentScreen = GuardianScreen.HOME },
+            onBack = { Logger.i(tag, "PIN setup back -> HOME"); currentScreen = GuardianScreen.HOME }
           )
         }
       }

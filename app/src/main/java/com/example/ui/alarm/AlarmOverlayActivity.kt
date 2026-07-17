@@ -16,7 +16,6 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Toast
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.animateColorAsState
@@ -45,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.components.PinKeypad
 import com.example.utils.AlarmHelper
 import com.example.utils.Constants
+import com.example.utils.Logger
 import com.example.utils.PinManager
 import kotlinx.coroutines.*
 import java.text.SimpleDateFormat
@@ -52,6 +52,10 @@ import java.util.Date
 import java.util.Locale
 
 class AlarmOverlayActivity : ComponentActivity() {
+  companion object {
+    private const val TAG = "AlarmOverlay"
+  }
+
   private var lockTaskActive = false
   private val focusHandler = Handler(Looper.getMainLooper())
   private val reassertRunnable = Runnable { bringToFrontAndLock() }
@@ -60,7 +64,7 @@ class AlarmOverlayActivity : ComponentActivity() {
 
   private var hiddenVolumeUpCounter = 0
   private val hiddenVolumeUpHandler = Handler(Looper.getMainLooper())
-  private val hiddenVolumeUpReset = Runnable { hiddenVolumeUpCounter = 0 }
+  private val hiddenVolumeUpReset = Runnable { hiddenVolumeUpCounter = 0; Logger.d(TAG, "hiddenVolumeUpCounter reset") }
 
   private var attemptCount = 0
   private var lockoutUntil = 0L
@@ -69,10 +73,12 @@ class AlarmOverlayActivity : ComponentActivity() {
 
   private val alarmReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
+      Logger.i(TAG, "alarmReceiver action=${intent?.action}")
       when (intent?.action) {
         Constants.ACTION_ALARM_STOPPED -> {
+          Logger.i(TAG, "ACTION_ALARM_STOPPED received — finishing overlay")
           if (lockTaskActive) {
-            try { stopLockTask() } catch (_: Exception) {}
+            try { stopLockTask(); Logger.d(TAG, "Lock task stopped") } catch (e: Exception) { Logger.e(TAG, "Error stopping lock task", e) }
             lockTaskActive = false
           }
           AlarmHelper.stopSiren()
@@ -86,6 +92,7 @@ class AlarmOverlayActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     val armOnly = intent?.getBooleanExtra(Constants.EXTRA_ARM_ONLY, false) ?: false
+    Logger.logLifecycle(TAG, "onCreate armOnly=$armOnly")
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
       setShowWhenLocked(true)
@@ -106,7 +113,9 @@ class AlarmOverlayActivity : ComponentActivity() {
             decor.windowInsetsController?.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
             decor.windowInsetsController?.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
           }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+          Logger.e(TAG, "Error hiding system bars", e)
+        }
       }
       it.decorView?.setOnSystemUiVisibilityChangeListener { visibility ->
         if (visibility and View.SYSTEM_UI_FLAG_FULLSCREEN == 0) {
@@ -120,13 +129,18 @@ class AlarmOverlayActivity : ComponentActivity() {
       try {
         val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         km.requestDismissKeyguard(this, null)
-      } catch (_: Exception) {}
+      } catch (e: Exception) {
+        Logger.e(TAG, "Error dismissing keyguard", e)
+      }
     }
 
     if (!armOnly) {
+      Logger.i(TAG, "Not armOnly — starting siren, lock task, watchdog")
       AlarmHelper.startSiren(this)
       bringToFrontAndLock()
       startLockTaskWatchdog()
+    } else {
+      Logger.i(TAG, "armOnly mode — no siren or lock task")
     }
 
     val filter = IntentFilter().apply {
@@ -138,6 +152,7 @@ class AlarmOverlayActivity : ComponentActivity() {
       registerReceiver(alarmReceiver, filter)
     }
     receiverRegistered = true
+    Logger.d(TAG, "Broadcast receiver registered")
 
     setContent {
       AlarmLockScreenContent(
@@ -149,6 +164,7 @@ class AlarmOverlayActivity : ComponentActivity() {
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
+    Logger.d(TAG, "onWindowFocusChanged hasFocus=$hasFocus sirenActive=${AlarmHelper.isSirenActive}")
     if (hasFocus) {
       hideSystemUI()
     } else if (AlarmHelper.isSirenActive) {
@@ -158,45 +174,59 @@ class AlarmOverlayActivity : ComponentActivity() {
   }
 
   private fun bringToFrontAndLock() {
-    if (!AlarmHelper.isSirenActive) return
+    if (!AlarmHelper.isSirenActive) {
+      Logger.d(TAG, "bringToFrontAndLock skipped — siren not active")
+      return
+    }
     try {
       startLockTask()
       lockTaskActive = true
-    } catch (_: Exception) {
+      Logger.i(TAG, "Lock task started")
+    } catch (e: Exception) {
+      Logger.e(TAG, "Failed to start lock task", e)
       lockTaskActive = false
     }
   }
 
   private fun startLockTaskWatchdog() {
+    Logger.i(TAG, "startLockTaskWatchdog — monitoring lock task every 2s")
     lockTaskWatchdog?.cancel()
     lockTaskWatchdog = lockTaskScope.launch {
       while (isActive && AlarmHelper.isSirenActive) {
         try {
           val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
           if (am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_NONE) {
+            Logger.w(TAG, "Lock task lost — re-acquiring")
             try {
               startLockTask()
               lockTaskActive = true
-            } catch (_: Exception) {
+              Logger.i(TAG, "Lock task re-acquired")
+            } catch (e: Exception) {
+              Logger.e(TAG, "Failed to re-acquire lock task — re-launching activity", e)
               val i = Intent(this@AlarmOverlayActivity, AlarmOverlayActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
               }
               startActivity(i)
             }
           }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+          Logger.e(TAG, "Lock task watchdog error", e)
+        }
         delay(2000L)
       }
+      Logger.d(TAG, "Lock task watchdog ended")
     }
   }
 
   override fun onUserLeaveHint() {
     super.onUserLeaveHint()
+    Logger.d(TAG, "onUserLeaveHint sirenActive=${AlarmHelper.isSirenActive}")
     if (AlarmHelper.isSirenActive) bringToFrontAndLock()
   }
 
   override fun onPause() {
     super.onPause()
+    Logger.d(TAG, "onPause sirenActive=${AlarmHelper.isSirenActive} isFinishing=$isFinishing")
     if (AlarmHelper.isSirenActive && !isFinishing) {
       focusHandler.postDelayed(reassertRunnable, 50)
     }
@@ -204,6 +234,7 @@ class AlarmOverlayActivity : ComponentActivity() {
 
   override fun onStop() {
     super.onStop()
+    Logger.d(TAG, "onStop sirenActive=${AlarmHelper.isSirenActive} isFinishing=$isFinishing")
     if (AlarmHelper.isSirenActive && !isFinishing) {
       focusHandler.postDelayed(reassertRunnable, 50)
     }
@@ -224,33 +255,41 @@ class AlarmOverlayActivity : ComponentActivity() {
     val now = System.currentTimeMillis()
     if (now < lockoutUntil) {
       val remaining = (lockoutUntil - now) / 1000
+      Logger.w(TAG, "PIN locked — ${remaining}s remaining")
       Toast.makeText(this, "Locked for ${remaining}s", Toast.LENGTH_SHORT).show()
       return
     }
     attemptCount++
+    Logger.d(TAG, "PIN attempt #$attemptCount/${Constants.MAX_PIN_ATTEMPTS} armOnly=$armOnly")
 
     if (PinManager.verifyPin(this, pin)) {
+      Logger.i(TAG, "PIN verified successfully")
       if (armOnly) {
         AlarmHelper.isArmed = true
+        Logger.i(TAG, "System armed via PIN (armOnly)")
         Toast.makeText(this, "System armed", Toast.LENGTH_SHORT).show()
       } else {
         if (lockTaskActive) {
-          try { stopLockTask() } catch (_: Exception) {}
+          try { stopLockTask(); Logger.d(TAG, "Lock task stopped on unlock") } catch (e: Exception) { Logger.e(TAG, "Error stopping lock task on unlock", e) }
           lockTaskActive = false
         }
         AlarmHelper.stopSiren(this)
         sendBroadcast(Intent(Constants.ACTION_ALARM_STOPPED))
+        Logger.i(TAG, "System disarmed via PIN, siren stopped")
         Toast.makeText(this, "Deactivation Successful", Toast.LENGTH_SHORT).show()
       }
       focusHandler.removeCallbacks(reassertRunnable)
       finish()
     } else {
+      Logger.w(TAG, "Incorrect PIN (attempt #$attemptCount)")
       if (attemptCount >= Constants.MAX_PIN_ATTEMPTS) {
         lockoutUntil = System.currentTimeMillis() + 30_000L
         attemptCount = 0
+        Logger.w(TAG, "Too many wrong attempts — lockout for 30s")
         Toast.makeText(this, "Too many attempts — locked for 30s", Toast.LENGTH_LONG).show()
         focusHandler.postDelayed({
           lockoutUntil = 0L
+          Logger.i(TAG, "PIN lockout expired")
           Toast.makeText(this, "You can try PIN again", Toast.LENGTH_SHORT).show()
         }, 30_000L)
       } else {
@@ -260,13 +299,16 @@ class AlarmOverlayActivity : ComponentActivity() {
   }
 
   override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+    Logger.d(TAG, "onKeyDown keyCode=$keyCode sirenActive=${AlarmHelper.isSirenActive}")
     if (event?.action == KeyEvent.ACTION_DOWN && AlarmHelper.isSirenActive) {
       when (keyCode) {
         KeyEvent.KEYCODE_VOLUME_UP -> {
           hiddenVolumeUpCounter++
           hiddenVolumeUpHandler.removeCallbacks(hiddenVolumeUpReset)
           hiddenVolumeUpHandler.postDelayed(hiddenVolumeUpReset, 3000L)
+          Logger.d(TAG, "Hidden volume up press #$hiddenVolumeUpCounter")
           if (hiddenVolumeUpCounter >= 3) {
+            Logger.w(TAG, "Hidden triple volume up — silencing siren")
             hiddenVolumeUpCounter = 0
             hiddenVolumeUpHandler.removeCallbacks(hiddenVolumeUpReset)
             AlarmHelper.stopSiren()
@@ -275,21 +317,27 @@ class AlarmOverlayActivity : ComponentActivity() {
           }
           return true
         }
-        KeyEvent.KEYCODE_VOLUME_DOWN -> return true
+        KeyEvent.KEYCODE_VOLUME_DOWN -> {
+          Logger.d(TAG, "Volume down blocked during siren")
+          return true
+        }
       }
     }
     return super.onKeyDown(keyCode, event)
   }
 
-  override fun onBackPressed() {}
+  override fun onBackPressed() {
+    Logger.d(TAG, "onBackPressed — blocked")
+  }
 
   override fun onDestroy() {
+    Logger.logLifecycle(TAG, "onDestroy")
     super.onDestroy()
     lockTaskWatchdog?.cancel()
     AlarmHelper.stopSiren()
     focusHandler.removeCallbacks(reassertRunnable)
     if (receiverRegistered) {
-      try { unregisterReceiver(alarmReceiver) } catch (_: Exception) {}
+      try { unregisterReceiver(alarmReceiver); Logger.d(TAG, "alarmReceiver unregistered") } catch (e: Exception) { Logger.e(TAG, "Error unregistering alarmReceiver", e) }
     }
   }
 }

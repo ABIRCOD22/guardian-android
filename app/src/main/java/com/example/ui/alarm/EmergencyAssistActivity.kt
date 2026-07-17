@@ -39,11 +39,13 @@ import com.example.utils.AlarmHelper
 import com.example.utils.Constants
 import com.example.utils.FirestoreSync
 import com.example.utils.LocationHelper
+import com.example.utils.Logger
 import kotlinx.coroutines.*
 
 class EmergencyAssistActivity : ComponentActivity() {
 
   companion object {
+    private const val TAG = "EmergencyAssist"
     const val EXTRA_MESSAGE = "emergency_message"
     const val EXTRA_TRUSTED_CONTACT = "trusted_contact"
     const val EXTRA_CONTACT_PHONE = "contact_phone"
@@ -53,6 +55,7 @@ class EmergencyAssistActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    Logger.logLifecycle(TAG, "onCreate")
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
       setShowWhenLocked(true)
       setTurnScreenOn(true)
@@ -72,10 +75,12 @@ class EmergencyAssistActivity : ComponentActivity() {
     val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Emergency assistance requested"
     val contactName = intent?.getStringExtra(EXTRA_TRUSTED_CONTACT)
     val contactPhone = intent?.getStringExtra(EXTRA_CONTACT_PHONE)
+    Logger.i(TAG, "message=$message contactName=$contactName contactPhone=$contactPhone")
 
     assistScope.launch {
       val location = LocationHelper.getCurrentLocation(this@EmergencyAssistActivity)
       FirestoreSync.reportEvent("assist_screen_opened", location)
+      Logger.i(TAG, "assist_screen_opened event reported to Firestore")
     }
 
     setContent {
@@ -91,28 +96,37 @@ class EmergencyAssistActivity : ComponentActivity() {
   }
 
   private fun callContact(phone: String?) {
-    if (phone.isNullOrBlank()) return
+    if (phone.isNullOrBlank()) {
+      Logger.w(TAG, "callContact — phone is null or blank")
+      return
+    }
+    Logger.i(TAG, "callContact — dialing $phone")
     if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+      Logger.d(TAG, "CALL_PHONE permission not granted — using ACTION_DIAL")
       val intent = Intent(Intent.ACTION_DIAL).apply { data = Uri.parse("tel:$phone") }
       startActivity(intent)
       return
     }
     val intent = Intent(Intent.ACTION_CALL).apply { data = Uri.parse("tel:$phone") }
     startActivity(intent)
+    Logger.i(TAG, "ACTION_CALL started")
   }
 
   private fun openInMaps() {
+    Logger.i(TAG, "openInMaps")
     val uri = Uri.parse("https://www.google.com/maps")
     startActivity(Intent(Intent.ACTION_VIEW, uri))
   }
 
   private fun finishAssist() {
+    Logger.i(TAG, "finishAssist — stopping siren, cancelling scope, finishing affinity")
     AlarmHelper.stopSiren(this)
     assistScope.cancel()
     finishAffinity()
   }
 
   override fun onDestroy() {
+    Logger.logLifecycle(TAG, "onDestroy — cancelling assist scope")
     assistScope.cancel()
     super.onDestroy()
   }

@@ -18,9 +18,11 @@ import androidx.core.app.NotificationCompat
 import com.example.ui.alarm.AlarmOverlayActivity
 import com.example.utils.AlarmHelper
 import com.example.utils.Constants
+import com.example.utils.Logger
 
 class ProtectionService : Service() {
   companion object {
+    private const val TAG = "ProtectionService"
     const val ACTION_START = "com.example.action.START_PROTECTION"
     const val ACTION_STOP = "com.example.action.STOP_PROTECTION"
   }
@@ -40,26 +42,35 @@ class ProtectionService : Service() {
       val maxRange = proximitySensor?.maximumRange ?: return
       val isNear = distance < maxRange * 0.5f
       if (wasProximityNear && !isNear) {
+        Logger.i(TAG, "Proximity sensor triggered alarm (near->far transition)")
         triggerAlarm()
       }
       wasProximityNear = isNear
     }
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+      Logger.d(TAG, "Proximity accuracy changed to $accuracy")
+    }
   }
 
   override fun onCreate() {
     super.onCreate()
+    Logger.logLifecycle(TAG, "onCreate")
     createNotificationChannel()
     registerPowerReceiver()
     registerUsbReceiver()
     registerSimReceiver()
     registerProximitySensor()
-    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ ready = true }, 2000)
+    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+      ready = true
+      Logger.i(TAG, "Ready flag set to true after 2s delay")
+    }, 2000)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    Logger.i(TAG, "onStartCommand action=${intent?.action} flags=$flags startId=$startId")
     when (intent?.action) {
       ACTION_STOP -> {
+        Logger.i(TAG, "ACTION_STOP received — stopping foreground service")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         return START_NOT_STICKY
@@ -73,6 +84,7 @@ class ProtectionService : Service() {
   }
 
   override fun onTaskRemoved(rootIntent: Intent?) {
+    Logger.w(TAG, "onTaskRemoved — restarting service")
     val restartIntent = Intent(this, ProtectionService::class.java).apply {
       action = ACTION_START
     }
@@ -82,7 +94,10 @@ class ProtectionService : Service() {
       } else {
         startService(restartIntent)
       }
-    } catch (_: Exception) {}
+      Logger.i(TAG, "Restart intent sent successfully")
+    } catch (e: Exception) {
+      Logger.e(TAG, "Failed to restart service on task removed", e)
+    }
     super.onTaskRemoved(rootIntent)
   }
 
@@ -109,17 +124,23 @@ class ProtectionService : Service() {
   }
 
   private fun isProtectionActive(): Boolean {
-    return getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
+    val active = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
       .getBoolean("protection_active", false)
+    Logger.d(TAG, "isProtectionActive=$active")
+    return active
   }
 
   private fun registerPowerReceiver() {
     powerReceiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
         if (intent == null || context == null) return
+        Logger.d(TAG, "Power receiver: action=${intent.action} ready=$ready monitoringEnabled=${AlarmHelper.monitoringEnabled}")
         if (!ready || !isProtectionActive() || !AlarmHelper.monitoringEnabled) return
         if (intent.action == Intent.ACTION_POWER_DISCONNECTED) {
+          Logger.w(TAG, "Power disconnected — triggering alarm")
           triggerAlarm()
+        } else if (intent.action == Intent.ACTION_POWER_CONNECTED) {
+          Logger.i(TAG, "Power connected (no action required)")
         }
       }
     }
@@ -134,10 +155,15 @@ class ProtectionService : Service() {
     usbReceiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
         if (intent == null || context == null) return
+        Logger.d(TAG, "USB receiver: action=${intent.action} ready=$ready monitoringEnabled=${AlarmHelper.monitoringEnabled}")
         if (!ready || !isProtectionActive() || !AlarmHelper.monitoringEnabled) return
         if (intent.action == "android.hardware.usb.action.USB_STATE") {
           val connected = intent.getBooleanExtra("connected", false)
-          if (connected) triggerAlarm()
+          Logger.i(TAG, "USB state changed — connected=$connected")
+          if (connected) {
+            Logger.w(TAG, "USB connected — triggering alarm")
+            triggerAlarm()
+          }
         }
       }
     }
@@ -149,10 +175,13 @@ class ProtectionService : Service() {
     simReceiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
         if (intent == null || context == null) return
+        Logger.d(TAG, "SIM receiver: action=${intent.action} ready=$ready monitoringEnabled=${AlarmHelper.monitoringEnabled}")
         if (!ready || !isProtectionActive() || !AlarmHelper.monitoringEnabled) return
         if (intent.action == "android.intent.action.SIM_STATE_CHANGED") {
           val state = intent.getStringExtra("ss") ?: return
+          Logger.i(TAG, "SIM state changed — state=$state")
           if (state == "ABSENT" || state == "NOT_READY") {
+            Logger.w(TAG, "SIM state=$state — triggering alarm")
             triggerAlarm()
           }
         }
@@ -166,15 +195,19 @@ class ProtectionService : Service() {
     sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
     proximitySensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
     if (proximitySensor != null) {
+      Logger.i(TAG, "Proximity sensor registered (maxRange=${proximitySensor?.maximumRange})")
       sensorManager?.registerListener(
         proximityListener,
         proximitySensor,
         SensorManager.SENSOR_DELAY_NORMAL
       )
+    } else {
+      Logger.w(TAG, "No proximity sensor available on this device")
     }
   }
 
   private fun triggerAlarm() {
+    Logger.w(TAG, "triggerAlarm — starting AlarmOverlayActivity")
     val intent = Intent(this, AlarmOverlayActivity::class.java).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     }
@@ -182,10 +215,17 @@ class ProtectionService : Service() {
   }
 
   override fun onDestroy() {
-    powerReceiver?.let { unregisterReceiver(it) }
-    usbReceiver?.let { unregisterReceiver(it) }
-    simReceiver?.let { unregisterReceiver(it) }
-    sensorManager?.unregisterListener(proximityListener)
+    Logger.logLifecycle(TAG, "onDestroy — unregistering receivers and sensor listener")
+    powerReceiver?.let {
+      try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering powerReceiver", e) }
+    }
+    usbReceiver?.let {
+      try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering usbReceiver", e) }
+    }
+    simReceiver?.let {
+      try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering simReceiver", e) }
+    }
+    try { sensorManager?.unregisterListener(proximityListener) } catch (e: Exception) { Logger.e(TAG, "Error unregistering proximityListener", e) }
     super.onDestroy()
   }
 

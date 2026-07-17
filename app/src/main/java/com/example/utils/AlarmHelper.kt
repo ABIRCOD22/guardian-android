@@ -7,6 +7,8 @@ import androidx.compose.runtime.setValue
 import com.example.services.SirenService
 
 object AlarmHelper {
+  private const val TAG = "AlarmHelper"
+
   @Volatile
   var isSirenActive = false
     private set
@@ -18,17 +20,22 @@ object AlarmHelper {
   var sirenService: SirenService? = null
 
   fun startSiren(context: Context) {
+    Logger.i(TAG, "startSiren — isArmed=$isArmed monitoringEnabled=$monitoringEnabled")
     isSirenActive = true
     SirenService.start(context)
+    Logger.i(TAG, "SirenService started, isSirenActive=true")
   }
 
   fun stopSiren() {
+    Logger.i(TAG, "stopSiren (no context)")
     isSirenActive = false
     sirenService?.stopSirenNow()
     sirenService = null
+    Logger.i(TAG, "Siren stopped, sirenService cleared")
   }
 
   fun stopSiren(context: Context) {
+    Logger.i(TAG, "stopSiren (with context)")
     isSirenActive = false
     sirenService?.stopSirenNow()
     try {
@@ -36,7 +43,11 @@ object AlarmHelper {
         action = Constants.ACTION_SILENCE_SIREN
       }
       context.startService(intent)
-    } catch (_: Exception) {}
+      Logger.d(TAG, "ACTION_SILENCE_SIREN intent sent")
+    } catch (e: Exception) {
+      Logger.e(TAG, "Error sending silence siren intent", e)
+    }
     sirenService = null
+    Logger.i(TAG, "Siren stopped via context, sirenService cleared")
   }
 }
