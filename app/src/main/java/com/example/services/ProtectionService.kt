@@ -18,6 +18,10 @@ import androidx.core.app.NotificationCompat
 import com.example.ui.alarm.AlarmOverlayActivity
 import com.example.utils.AlarmHelper
 import com.example.utils.Constants
+import com.example.utils.FirestoreSync
+import com.example.utils.LocationHelper
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import com.example.utils.Logger
 
 class ProtectionService : Service() {
@@ -43,7 +47,7 @@ class ProtectionService : Service() {
       val isNear = distance < maxRange * 0.5f
       if (wasProximityNear && !isNear) {
         Logger.i(TAG, "Proximity sensor triggered alarm (near->far transition)")
-        triggerAlarm()
+        triggerAlarm("proximity")
       }
       wasProximityNear = isNear
     }
@@ -138,7 +142,7 @@ class ProtectionService : Service() {
         if (!ready || !isProtectionActive() || !AlarmHelper.monitoringEnabled) return
         if (intent.action == Intent.ACTION_POWER_DISCONNECTED) {
           Logger.w(TAG, "Power disconnected — triggering alarm")
-          triggerAlarm()
+          triggerAlarm("power_disconnected")
         } else if (intent.action == Intent.ACTION_POWER_CONNECTED) {
           Logger.i(TAG, "Power connected (no action required)")
         }
@@ -162,7 +166,7 @@ class ProtectionService : Service() {
           Logger.i(TAG, "USB state changed — connected=$connected")
           if (connected) {
             Logger.w(TAG, "USB connected — triggering alarm")
-            triggerAlarm()
+            triggerAlarm("usb_connected")
           }
         }
       }
@@ -182,7 +186,7 @@ class ProtectionService : Service() {
           Logger.i(TAG, "SIM state changed — state=$state")
           if (state == "ABSENT" || state == "NOT_READY") {
             Logger.w(TAG, "SIM state=$state — triggering alarm")
-            triggerAlarm()
+            triggerAlarm("sim_removed")
           }
         }
       }
@@ -206,8 +210,12 @@ class ProtectionService : Service() {
     }
   }
 
-  private fun triggerAlarm() {
-    Logger.w(TAG, "triggerAlarm — starting AlarmOverlayActivity")
+  private fun triggerAlarm(reason: String = "breach") {
+    Logger.w(TAG, "triggerAlarm — starting AlarmOverlayActivity (reason=$reason)")
+    GlobalScope.launch {
+      val loc = LocationHelper.getCurrentLocation(this@ProtectionService)
+      FirestoreSync.reportAlarmBreach(reason, loc)
+    }
     val intent = Intent(this, AlarmOverlayActivity::class.java).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     }
