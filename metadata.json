@@ -1,0 +1,6 @@
+{
+  "name": "Guardian",
+  "description": "Tactical anti-theft intelligence suite with real-time HUD metrics, biometric lock systems, and custom lockdown protocol visualizers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

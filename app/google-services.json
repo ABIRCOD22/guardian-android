@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "743927841981",
+    "project_id": "guardian-testing-f9226",
+    "storage_bucket": "guardian-testing-f9226.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:743927841981:android:0727b8020073bf012123d4",
+        "android_client_info": {
+          "package_name": "com.aistudio.guardian.tactical"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD-5850xd3ycMvznx3CeIU0Urhbt3SZkeg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

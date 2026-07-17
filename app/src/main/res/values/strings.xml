@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Guardian</string>
+    <string name="accessibility_service_description">Guardian uses the Accessibility Service to monitor system UI events, block power-off during alarm, intercept key events, and auto-dismiss screen pinning dialogs to ensure the alarm cannot be silenced or bypassed.</string>
+</resources>
