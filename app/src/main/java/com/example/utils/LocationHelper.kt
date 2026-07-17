@@ -12,12 +12,23 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlin.coroutines.resume
 
 object LocationHelper {
   private const val TAG = "LocationHelper"
   private var fusedClient: FusedLocationProviderClient? = null
+
+  private var periodicJob: Job? = null
+  private val _latestLocation = MutableStateFlow<DeviceLocation?>(null)
+  val latestLocation: StateFlow<DeviceLocation?> = _latestLocation
 
   private fun getClient(context: Context): FusedLocationProviderClient {
     if (fusedClient == null) {
@@ -125,6 +136,42 @@ object LocationHelper {
       Logger.e(TAG, "getCurrentLocation failed — falling back to getLastKnownLocation", e)
       getLastKnownLocation(context)
     }
+  }
+
+  fun isGpsEnabled(context: Context): Boolean {
+    return try {
+      val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+      val enabled = lm?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true
+      Logger.d(TAG, "isGpsEnabled=$enabled")
+      enabled
+    } catch (e: Exception) {
+      Logger.e(TAG, "isGpsEnabled check failed", e)
+      false
+    }
+  }
+
+  fun startPeriodicUpdates(context: Context, scope: CoroutineScope, intervalMs: Long = 30_000L) {
+    stopPeriodicUpdates()
+    Logger.i(TAG, "startPeriodicUpdates — interval=${intervalMs}ms")
+    periodicJob = scope.launch(Dispatchers.IO) {
+      while (true) {
+        val loc = getCurrentLocation(context)
+        if (loc != null) {
+          _latestLocation.value = loc
+          Logger.i(TAG, "Periodic location update: lat=${loc.latitude} lng=${loc.longitude}")
+          FirestoreSync.reportLocation(loc)
+        } else {
+          Logger.w(TAG, "Periodic location update — no location available")
+        }
+        delay(intervalMs)
+      }
+    }
+  }
+
+  fun stopPeriodicUpdates() {
+    Logger.i(TAG, "stopPeriodicUpdates")
+    periodicJob?.cancel()
+    periodicJob = null
   }
 
   fun getLocationUrl(location: DeviceLocation?): String {

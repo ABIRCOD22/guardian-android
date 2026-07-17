@@ -80,10 +80,29 @@ object FirestoreSync {
       Logger.d(TAG, "Latest location document updated")
       db.collection("locations").add(data).await()
       Logger.i(TAG, "Location reported successfully to locations collection")
+
+      // Also update the user document with latest location
+      val ctx = contextRef
+      if (ctx != null) {
+        val deviceId = getDeviceId(ctx)
+        val userLoc = hashMapOf<String, Any>(
+          "lastLatitude" to location.latitude,
+          "lastLongitude" to location.longitude,
+          "lastActive" to System.currentTimeMillis()
+        )
+        db.collection("users").document(deviceId)
+          .set(userLoc, SetOptions.merge())
+          .await()
+        Logger.d(TAG, "User document location updated")
+      }
     } catch (e: Exception) {
       Logger.e(TAG, "Failed to report location", e)
     }
   }
+
+  // Context reference for reportLocation
+  private var contextRef: Context? = null
+  fun setContext(context: Context) { contextRef = context }
 
   suspend fun reportEmergency(message: String, location: DeviceLocation?) {
     Logger.w(TAG, "reportEmergency message=\"$message\" lat=${location?.latitude} lng=${location?.longitude}")
@@ -103,6 +122,29 @@ object FirestoreSync {
     }
   }
 
+  suspend fun saveUserProfile(context: android.content.Context, name: String, email: String, photoUrl: String) {
+    try {
+      val deviceId = getDeviceId(context)
+      val data = hashMapOf(
+        "displayName" to name,
+        "email" to email,
+        "photoUrl" to photoUrl,
+        "deviceModel" to android.os.Build.MODEL,
+        "osVersion" to android.os.Build.VERSION.RELEASE,
+        "lastActive" to System.currentTimeMillis(),
+        "fcmToken" to (com.example.services.FirebaseMessagingService.getToken() ?: ""),
+        "shieldActive" to com.example.utils.AlarmHelper.isArmed,
+        "settings.isProtectionActive" to com.example.utils.AlarmHelper.isArmed
+      )
+      db.collection("users").document(deviceId)
+        .set(data, com.google.firebase.firestore.SetOptions.merge())
+        .await()
+      Logger.i("FirestoreSync", "User profile saved/updated for $name ($email)")
+    } catch (e: Exception) {
+      Logger.e("FirestoreSync", "Failed to save user profile", e)
+    }
+  }
+
   suspend fun updateAlarmStatus(context: Context, armed: Boolean, location: DeviceLocation?) {
     Logger.i(TAG, "updateAlarmStatus armed=$armed lat=${location?.latitude} lng=${location?.longitude}")
     try {
@@ -118,6 +160,23 @@ object FirestoreSync {
         .set(data, SetOptions.merge())
         .await()
       Logger.d(TAG, "Alarm status document updated in status/alarm")
+
+      // Also update the user document so the admin panel sees it live
+      val userData = hashMapOf(
+        "shieldActive" to armed,
+        "settings.isProtectionActive" to armed,
+        "alarmActive" to armed,
+        "lastActive" to System.currentTimeMillis()
+      )
+      if (location != null) {
+        userData["lastLatitude"] = location.latitude
+        userData["lastLongitude"] = location.longitude
+      }
+      db.collection("users").document(deviceId)
+        .set(userData, SetOptions.merge())
+        .await()
+      Logger.d(TAG, "User document shieldActive updated to $armed")
+
       reportEvent(if (armed) "armed" else "disarmed", location)
       Logger.i(TAG, "Alarm status update complete")
     } catch (e: Exception) {

@@ -29,12 +29,18 @@ object Logger {
   private val scope = CoroutineScope(Dispatchers.IO)
   private var remoteLoggingEnabled = false
   private var contextRef: Context? = null
+  private var deviceName: String = ""
+  private var deviceId: String = ""
 
   fun init(context: Context, enableRemote: Boolean = false) {
     contextRef = context
     remoteLoggingEnabled = enableRemote
-    i("Logger", "Logger initialized, remote=$enableRemote")
+    deviceName = context.getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE).getString("display_name", "") ?: ""
+    deviceId = FirestoreSync.getDeviceId(context)
+    i("Logger", "Logger initialized, remote=$enableRemote, device=$deviceName id=$deviceId")
   }
+
+  fun setDeviceName(name: String) { deviceName = name }
 
   private fun tag(prefix: String): String {
     return if (prefix.length <= MAX_TAG_LENGTH) prefix else prefix.substring(0, MAX_TAG_LENGTH)
@@ -58,7 +64,7 @@ object Logger {
       LogLevel.ERROR -> Log.e(t, fullMsg)
       LogLevel.ASSERT -> Log.wtf(t, fullMsg)
     }
-    if (remoteLoggingEnabled && level >= LogLevel.WARN) {
+    if (remoteLoggingEnabled) {
       logToFirestore(level, prefix, msg, tr)
     }
   }
@@ -81,6 +87,8 @@ object Logger {
           "message" to msg,
           "stacktrace" to (tr?.let { stackTraceToString(it) } ?: ""),
           "timestamp" to System.currentTimeMillis(),
+          "deviceName" to deviceName,
+          "deviceId" to deviceId,
           "appVersion" to "1.0"
         )
         com.google.firebase.firestore.FirebaseFirestore.getInstance()

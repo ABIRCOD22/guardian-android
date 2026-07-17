@@ -93,6 +93,7 @@ enum class GuardianScreen {
   SPLASH,
   ONBOARDING,
   LOGIN,
+  NAME_PROMPT,
   PERMISSION_NOTIFICATION,
   PERMISSION_LOCATION,
   PERMISSION_OVERLAY,
@@ -116,9 +117,32 @@ fun GuardianApp() {
 
   LaunchedEffect(Unit) {
     Logger.init(context, enableRemote = true)
+    FirestoreSync.setContext(context)
     Logger.i(tag, "App launched — Logger initialized, refreshing FCM token")
     com.example.services.FirebaseMessagingService.refreshToken()
   }
+
+  var showLocationDialog by remember { mutableStateOf(false) }
+
+  val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    if (granted) {
+      Logger.i(tag, "Location permission granted — checking GPS")
+      if (!LocationHelper.isGpsEnabled(context)) {
+        showLocationDialog = true
+      } else {
+        Logger.i(tag, "Arming after location permission granted")
+        val intent = Intent(context, com.example.ui.alarm.AlarmOverlayActivity::class.java).apply {
+          putExtra(Constants.EXTRA_ARM_ONLY, true)
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        context.startActivity(intent)
+      }
+    } else {
+      Logger.w(tag, "Location permission denied")
+      android.widget.Toast.makeText(context, "Location needed for live tracking on the map", android.widget.Toast.LENGTH_LONG).show()
+    }
+  }
+
   val toggleAlarm: () -> Unit = {
     try {
       if (AlarmHelper.isArmed) {
@@ -132,12 +156,20 @@ fun GuardianApp() {
         }
         android.widget.Toast.makeText(context, "System disarmed", android.widget.Toast.LENGTH_SHORT).show()
       } else {
-        Logger.i(tag, "toggleAlarm — arming system via AlarmOverlayActivity armOnly")
-        val intent = Intent(context, com.example.ui.alarm.AlarmOverlayActivity::class.java).apply {
-          putExtra(Constants.EXTRA_ARM_ONLY, true)
-          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        if (!LocationHelper.hasLocationPermission(context)) {
+          Logger.w(tag, "toggleAlarm — no location permission, requesting")
+          locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        } else if (!LocationHelper.isGpsEnabled(context)) {
+          Logger.w(tag, "toggleAlarm — GPS is off, showing dialog")
+          showLocationDialog = true
+        } else {
+          Logger.i(tag, "toggleAlarm — arming system via AlarmOverlayActivity armOnly")
+          val intent = Intent(context, com.example.ui.alarm.AlarmOverlayActivity::class.java).apply {
+            putExtra(Constants.EXTRA_ARM_ONLY, true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+          }
+          context.startActivity(intent)
         }
-        context.startActivity(intent)
       }
     } catch (e: Exception) {
       Logger.e(tag, "toggleAlarm failed", e)
@@ -147,7 +179,7 @@ fun GuardianApp() {
 
   LaunchedEffect(AlarmHelper.isArmed) {
     if (AlarmHelper.isArmed) {
-      Logger.i(tag, "isArmed became true — starting ProtectionService")
+      Logger.i(tag, "isArmed became true — starting ProtectionService + periodic location")
       prefs.edit().putBoolean("protection_active", true).apply()
       val serviceIntent = Intent(context, ProtectionService::class.java).apply {
         action = ProtectionService.ACTION_START
@@ -157,27 +189,88 @@ fun GuardianApp() {
       } else {
         context.startService(serviceIntent)
       }
-      val loc = LocationHelper.getLastKnownLocation(context)
+      val loc = LocationHelper.getCurrentLocation(context)
       FirestoreSync.updateAlarmStatus(context, true, loc)
-      Logger.i(tag, "ProtectionService started, alarm status reported")
+      LocationHelper.startPeriodicUpdates(context, this)
+      Logger.i(tag, "ProtectionService started, alarm status reported, location tracking active")
     } else {
-      Logger.i(tag, "isArmed became false — stopping ProtectionService")
+      Logger.i(tag, "isArmed became false — stopping ProtectionService + periodic location")
       prefs.edit().putBoolean("protection_active", false).apply()
       val stopIntent = Intent(context, ProtectionService::class.java).apply {
         action = ProtectionService.ACTION_STOP
       }
       context.stopService(stopIntent)
-      Logger.i(tag, "ProtectionService stopped")
+      LocationHelper.stopPeriodicUpdates()
+      Logger.i(tag, "ProtectionService stopped, location tracking stopped")
     }
   }
 
   // App Shared States
-  var emailInput by remember { mutableStateOf("operative@guardian.net") }
-  var passwordInput by remember { mutableStateOf("••••••••") }
+  val GOOGLE_WEB_CLIENT_ID = "28723391523-69f5f3rvurs65eiphg6goej2lh6a3pol.apps.googleusercontent.com"
   var biometricEnabled by remember { mutableStateOf(true) }
   var twoFactorEnabled by remember { mutableStateOf(false) }
   var alertConfigEnabled by remember { mutableStateOf(true) }
-  
+  var displayName by remember { mutableStateOf(prefs.getString("display_name", "") ?: "") }
+  var googleEmail by remember { mutableStateOf(prefs.getString("google_email", "") ?: "") }
+  var photoUrl by remember { mutableStateOf(prefs.getString("photo_url", "") ?: "") }
+  var isSigningIn by remember { mutableStateOf(false) }
+  var namePromptNeeded by remember { mutableStateOf(displayName.isBlank()) }
+
+  val googleSignInLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.StartActivityForResult()
+  ) { result ->
+    isSigningIn = false
+    try {
+      val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
+      val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+      val name = account.displayName ?: ""
+      val email = account.email ?: ""
+      val photo = account.photoUrl?.toString() ?: ""
+      Logger.i(tag, "Google Sign-In success: email=$email name=$name")
+      googleEmail = email
+      prefs.edit().putString("google_email", email).apply()
+      if (photo.isNotBlank()) { photoUrl = photo; prefs.edit().putString("photo_url", photo).apply() }
+      if (name.isNotBlank()) {
+        displayName = name
+        Logger.setDeviceName(name)
+        prefs.edit().putString("display_name", name).apply()
+        namePromptNeeded = false
+        kotlinx.coroutines.MainScope().launch {
+          FirestoreSync.saveUserProfile(context, displayName, googleEmail, photoUrl)
+        }
+        Logger.i(tag, "Google name used directly, no name prompt needed -> PERMISSION_NOTIFICATION")
+        currentScreen = if (setupComplete) GuardianScreen.HOME else GuardianScreen.PERMISSION_NOTIFICATION
+      } else {
+        namePromptNeeded = true
+        Logger.i(tag, "No name from Google -> NAME_PROMPT")
+        currentScreen = GuardianScreen.NAME_PROMPT
+      }
+    } catch (e: Exception) {
+      Logger.e(tag, "Google Sign-In failed", e)
+      isSigningIn = false
+      android.widget.Toast.makeText(context, "Sign-in failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+    }
+  }
+
+  fun launchGoogleSignIn() {
+    try {
+      isSigningIn = true
+      val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(
+        com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN
+      )
+        .requestEmail()
+        .requestProfile()
+        .build()
+      val googleSignInClient = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso)
+      googleSignInClient.signOut().addOnCompleteListener {
+        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+      }
+    } catch (e: Exception) {
+      Logger.e(tag, "launchGoogleSignIn failed", e)
+      isSigningIn = false
+    }
+  }
+
   Box(
     modifier = Modifier
       .fillMaxSize()
@@ -208,11 +301,28 @@ fun GuardianApp() {
         GuardianScreen.LOGIN -> {
           LaunchedEffect(screen) { Logger.i(tag, "Screen: LOGIN") }
           LoginScreen(
-            email = emailInput,
-            password = passwordInput,
-            onEmailChange = { emailInput = it },
-            onPasswordChange = { passwordInput = it },
-            onLoginSuccess = { Logger.i(tag, "Login success -> PERMISSION_NOTIFICATION"); currentScreen = GuardianScreen.PERMISSION_NOTIFICATION }
+            onGoogleSignInClick = { launchGoogleSignIn() },
+            isSigningIn = isSigningIn
+          )
+        }
+        GuardianScreen.NAME_PROMPT -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: NAME_PROMPT") }
+          NamePromptScreen(
+            initialName = displayName,
+            onNameChange = { name ->
+              displayName = name
+              Logger.setDeviceName(name)
+              prefs.edit().putString("display_name", name).apply()
+              namePromptNeeded = false
+              kotlinx.coroutines.MainScope().launch {
+                FirestoreSync.saveUserProfile(context, displayName, googleEmail, photoUrl)
+              }
+              Logger.i(tag, "Name set: $name")
+            },
+            onContinue = {
+              currentScreen = if (setupComplete) GuardianScreen.HOME else GuardianScreen.PERMISSION_NOTIFICATION
+            },
+            onBack = { currentScreen = GuardianScreen.LOGIN }
           )
         }
         GuardianScreen.PERMISSION_NOTIFICATION -> {
@@ -286,6 +396,7 @@ fun GuardianApp() {
         GuardianScreen.HOME -> {
           LaunchedEffect(screen) { Logger.i(tag, "Screen: HOME") }
           HomeScreen(
+            displayName = displayName,
             isAlarmActive = AlarmHelper.isArmed,
             onToggleAlarm = toggleAlarm,
             onNavigateToProfile = { Logger.i(tag, "Home -> PROFILE"); currentScreen = GuardianScreen.PROFILE },
@@ -295,6 +406,16 @@ fun GuardianApp() {
         GuardianScreen.PROFILE -> {
           LaunchedEffect(screen) { Logger.i(tag, "Screen: PROFILE") }
           ProfileScreen(
+            displayName = displayName,
+            googleEmail = googleEmail,
+            onDisplayNameChange = { name ->
+              displayName = name
+              Logger.setDeviceName(name)
+              prefs.edit().putString("display_name", name).apply()
+              kotlinx.coroutines.MainScope().launch {
+                FirestoreSync.saveUserProfile(context, displayName, googleEmail, photoUrl)
+              }
+            },
             biometricEnabled = biometricEnabled,
             twoFactorEnabled = twoFactorEnabled,
             alertConfigEnabled = alertConfigEnabled,
@@ -302,7 +423,12 @@ fun GuardianApp() {
             onTwoFactorToggle = { twoFactorEnabled = it },
             onAlertConfigToggle = { alertConfigEnabled = it },
             onLockTriggered = toggleAlarm,
-            onLogout = { Logger.i(tag, "Profile logout -> LOGIN"); currentScreen = GuardianScreen.LOGIN },
+            onLogout = {
+              Logger.i(tag, "Profile logout -> LOGIN")
+              prefs.edit().remove("display_name").remove("google_email").remove("photo_url").apply()
+              displayName = ""; googleEmail = ""; photoUrl = ""
+              currentScreen = GuardianScreen.LOGIN
+            },
             onNavigateToHome = { Logger.i(tag, "Profile -> HOME"); currentScreen = GuardianScreen.HOME }
           )
         }
@@ -317,6 +443,28 @@ fun GuardianApp() {
       }
     }
 
+    if (showLocationDialog) {
+      AlertDialog(
+        onDismissRequest = { showLocationDialog = false },
+        containerColor = Color(0xFF0C0E1A),
+        titleContentColor = Color(0xFFE5E1E5),
+        textContentColor = Color(0xFFC3C5D8),
+        icon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color(0xFF49FCD9)) },
+        title = { Text("Location Required", fontWeight = FontWeight.Bold) },
+        text = {
+          Text("For live tracking on the admin map, GPS must be enabled. Please turn on location services.")
+        },
+        confirmButton = {
+          TextButton(onClick = {
+            showLocationDialog = false
+            context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+          }) { Text("Open Location Settings", color = Color(0xFF49FCD9)) }
+        },
+        dismissButton = {
+          TextButton(onClick = { showLocationDialog = false }) { Text("Cancel", color = Color(0xFFC3C5D8)) }
+        }
+      )
+    }
 
   }
 }
@@ -839,11 +987,8 @@ private fun OnboardingIllustration3() {
 
 @Composable
 fun LoginScreen(
-  email: String,
-  password: String,
-  onEmailChange: (String) -> Unit,
-  onPasswordChange: (String) -> Unit,
-  onLoginSuccess: () -> Unit
+  onGoogleSignInClick: () -> Unit,
+  isSigningIn: Boolean
 ) {
   var pwdVisible by remember { mutableStateOf(false) }
 
@@ -870,8 +1015,7 @@ fun LoginScreen(
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .padding(horizontal = 24.dp)
-        .verticalScroll(rememberScrollState()),
+        .padding(horizontal = 24.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
       verticalArrangement = Arrangement.Center
     ) {
@@ -899,7 +1043,7 @@ fun LoginScreen(
       }
 
       Text(
-        text = "Welcome Back.",
+        text = "Welcome to Guardian.",
         fontSize = 32.sp,
         fontWeight = FontWeight.ExtraBold,
         color = Color(0xFFE5E1E5)
@@ -908,108 +1052,203 @@ fun LoginScreen(
       Spacer(modifier = Modifier.height(6.dp))
 
       Text(
-        text = "Authenticate to access the tactical grid.",
+        text = "Sign in with your Google account to get started.",
         fontSize = 14.sp,
         color = Color(0xFFC3C5D8).copy(alpha = 0.7f),
         textAlign = TextAlign.Center
       )
 
-      Spacer(modifier = Modifier.height(40.dp))
+      Spacer(modifier = Modifier.height(48.dp))
 
-      // Input Form Fields (M3 Filling Glass style)
-      Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+      // Google Sign-In Button (centered)
+      Button(
+        onClick = onGoogleSignInClick,
+        enabled = !isSigningIn,
+        colors = ButtonDefaults.buttonColors(
+          containerColor = Color(0xFF131316),
+          contentColor = Color(0xFFE5E1E5)
+        ),
+        border = BorderStroke(0.5.dp, Color(0xFF434655)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+          .width(280.dp)
+          .height(52.dp)
       ) {
-        // Email Field
-        OutlinedTextField(
-          value = email,
-          onValueChange = onEmailChange,
-          leadingIcon = {
-            Icon(
-              imageVector = Icons.Default.Mail,
-              contentDescription = "Mail icon",
-              tint = Color(0xFF434655)
-            )
-          },
-          placeholder = {
-            Text(
-              "Email Address",
-              color = Color(0xFF8D90A1)
-            )
-          },
-          textStyle = LocalTextStyle.current.copy(color = Color(0xFFE5E1E5)),
-          singleLine = true,
-          shape = RoundedCornerShape(14.dp),
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = Color(0xFF0C0E1A).copy(alpha = 0.4f),
-            unfocusedContainerColor = Color(0xFF0C0E1A).copy(alpha = 0.4f),
-            focusedBorderColor = Color(0xFF668AFF),
-            unfocusedBorderColor = Color(0xFF434655).copy(alpha = 0.6f)
-          ),
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.Center,
           modifier = Modifier.fillMaxWidth()
-        )
-
-        // Password Field
-        OutlinedTextField(
-          value = password,
-          onValueChange = onPasswordChange,
-          leadingIcon = {
-            Icon(
-              imageVector = Icons.Default.Lock,
-              contentDescription = "Lock icon",
-              tint = Color(0xFF434655)
+        ) {
+          if (isSigningIn) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(20.dp),
+              color = Color(0xFF49FCD9),
+              strokeWidth = 2.dp
             )
-          },
-          trailingIcon = {
-            IconButton(onClick = { pwdVisible = !pwdVisible }) {
-              Icon(
-                imageVector = if (pwdVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                contentDescription = "Toggle password",
-                tint = Color(0xFF8D90A1)
-              )
-            }
-          },
-          placeholder = {
+            Spacer(modifier = Modifier.width(12.dp))
             Text(
-              "Password",
-              color = Color(0xFF8D90A1)
+              "Signing in...",
+              color = Color(0xFFD0D5DD),
+              fontSize = 13.sp,
+              fontWeight = FontWeight.Medium
             )
-          },
-          textStyle = LocalTextStyle.current.copy(color = Color(0xFFE5E1E5)),
-          visualTransformation = if (pwdVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
-          singleLine = true,
-          shape = RoundedCornerShape(14.dp),
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = Color(0xFF0C0E1A).copy(alpha = 0.4f),
-            unfocusedContainerColor = Color(0xFF0C0E1A).copy(alpha = 0.4f),
-            focusedBorderColor = Color(0xFF668AFF),
-            unfocusedBorderColor = Color(0xFF434655).copy(alpha = 0.6f)
-          ),
-          modifier = Modifier.fillMaxWidth()
-        )
+          } else {
+            Icon(
+              imageVector = Icons.Default.AccountCircle,
+              contentDescription = "Google icon",
+              tint = Color(0xFF49FCD9),
+              modifier = Modifier.size(22.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+              "Sign in with Google",
+              color = Color(0xFFD0D5DD),
+              fontSize = 13.sp,
+              fontWeight = FontWeight.Medium
+            )
+          }
+        }
       }
 
-      Spacer(modifier = Modifier.height(10.dp))
+      Spacer(modifier = Modifier.height(16.dp))
 
+      Text(
+        text = "By continuing, you agree to our Terms of Service & Privacy Policy.",
+        color = Color(0xFFC3C5D8).copy(alpha = 0.4f),
+        fontSize = 10.sp,
+        textAlign = TextAlign.Center
+      )
+
+      Spacer(modifier = Modifier.height(40.dp))
+    }
+  }
+}
+
+@Composable
+fun NamePromptScreen(
+  initialName: String,
+  onNameChange: (String) -> Unit,
+  onContinue: () -> Unit,
+  onBack: () -> Unit
+) {
+  var name by remember { mutableStateOf(initialName) }
+  var showError by remember { mutableStateOf(false) }
+
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .background(Color(0xFF050507))
+      .safeDrawingPadding()
+  ) {
+    Box(
+      modifier = Modifier
+        .size(450.dp)
+        .align(Alignment.TopCenter)
+        .offset(y = (-150).dp)
+        .background(
+          brush = Brush.radialGradient(
+            colors = listOf(Color(0xFF49FCD9).copy(alpha = 0.06f), Color.Transparent),
+            radius = 450f
+          )
+        )
+    )
+
+    Column(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(horizontal = 24.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.Center
+    ) {
       Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End
+        horizontalArrangement = Arrangement.Start
       ) {
-        Text(
-          text = "Forgot password?",
-          color = Color(0xFFB6C4FF),
-          fontSize = 12.sp,
-          fontWeight = FontWeight.SemiBold,
-          modifier = Modifier.clickable { }
+        IconButton(
+          onClick = onBack,
+          modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF131316).copy(alpha = 0.6f))
+            .border(0.5.dp, Color(0xFF434655), CircleShape)
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "Back",
+            tint = Color(0xFFC3C5D8),
+            modifier = Modifier.size(18.dp)
+          )
+        }
+      }
+
+      Spacer(modifier = Modifier.height(32.dp))
+
+      Box(
+        modifier = Modifier
+          .size(80.dp)
+          .clip(CircleShape)
+          .background(Color(0xFF49FCD9).copy(alpha = 0.1f)),
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(
+          imageVector = Icons.Default.Person,
+          contentDescription = null,
+          tint = Color(0xFF49FCD9),
+          modifier = Modifier.size(40.dp)
         )
       }
 
       Spacer(modifier = Modifier.height(24.dp))
 
-      // Gradient primary button
+      Text(
+        "Welcome!",
+        fontSize = 28.sp,
+        fontWeight = FontWeight.ExtraBold,
+        color = Color(0xFFE5E1E5)
+      )
+
+      Spacer(modifier = Modifier.height(6.dp))
+
+      Text(
+        "What should we call you?",
+        fontSize = 14.sp,
+        color = Color(0xFFC3C5D8).copy(alpha = 0.7f),
+        textAlign = TextAlign.Center
+      )
+
+      Spacer(modifier = Modifier.height(36.dp))
+
+      OutlinedTextField(
+        value = name,
+        onValueChange = { name = it; showError = false },
+        placeholder = { Text("Your name", color = Color(0xFF8D90A1)) },
+        singleLine = true,
+        shape = RoundedCornerShape(14.dp),
+        isError = showError,
+        supportingText = if (showError) {{ Text("Please enter a name", color = Color(0xFFFF1744)) }} else null,
+        colors = OutlinedTextFieldDefaults.colors(
+          focusedContainerColor = Color(0xFF0C0E1A).copy(alpha = 0.4f),
+          unfocusedContainerColor = Color(0xFF0C0E1A).copy(alpha = 0.4f),
+          focusedBorderColor = Color(0xFF49FCD9),
+          unfocusedBorderColor = Color(0xFF434655).copy(alpha = 0.6f),
+          cursorColor = Color(0xFF49FCD9),
+          focusedTextColor = Color(0xFFE5E1E5),
+          unfocusedTextColor = Color(0xFFE5E1E5)
+        ),
+        modifier = Modifier.fillMaxWidth()
+      )
+
+      Spacer(modifier = Modifier.height(28.dp))
+
       Button(
-        onClick = onLoginSuccess,
+        onClick = {
+          if (name.isBlank()) {
+            showError = true
+          } else {
+            onNameChange(name.trim())
+            onContinue()
+          }
+        },
         colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
         contentPadding = PaddingValues(),
         shape = RoundedCornerShape(12.dp),
@@ -1022,115 +1261,22 @@ fun LoginScreen(
             .fillMaxSize()
             .background(
               brush = Brush.linearGradient(
-                colors = listOf(Color(0xFF3D6FFF), Color(0xFF4DFFDB))
+                colors = listOf(Color(0xFF3D6FFF), Color(0xFF49FCD9))
               )
             ),
           contentAlignment = Alignment.Center
         ) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-          ) {
-            Text(
-              "SIGN IN",
-              color = Color(0xFF00164F),
-              fontSize = 12.sp,
-              fontWeight = FontWeight.Bold,
-              letterSpacing = 1.sp
-            )
-            Icon(
-              imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-              contentDescription = "Login sign icon",
-              tint = Color(0xFF00164F),
-              modifier = Modifier.size(16.dp)
-            )
-          }
-        }
-      }
-
-      Spacer(modifier = Modifier.height(24.dp))
-
-      // OR Divider
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Box(
-          modifier = Modifier
-            .weight(1f)
-            .height(1.dp)
-            .background(Color(0xFF434655).copy(alpha = 0.4f))
-        )
-        Text(
-          "OR",
-          color = Color(0xFFC3C5D8).copy(alpha = 0.6f),
-          fontSize = 10.sp,
-          fontWeight = FontWeight.Bold,
-          modifier = Modifier.padding(horizontal = 16.dp)
-        )
-        Box(
-          modifier = Modifier
-            .weight(1f)
-            .height(1.dp)
-            .background(Color(0xFF434655).copy(alpha = 0.4f))
-        )
-      }
-
-      Spacer(modifier = Modifier.height(24.dp))
-
-      // Google sign-in button
-      Button(
-        onClick = onLoginSuccess,
-        colors = ButtonDefaults.buttonColors(
-          containerColor = Color(0xFF131316),
-          contentColor = Color(0xFFE5E1E5)
-        ),
-        border = BorderStroke(0.5.dp, Color(0xFF434655)),
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(48.dp)
-      ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-          // Custom Google G logo icon
-          Icon(
-            imageVector = Icons.Default.Android,
-            contentDescription = "G icon",
-            tint = Color(0xFFB6C4FF),
-            modifier = Modifier.size(18.dp)
-          )
           Text(
-            "Sign in with Google",
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium
+            "Continue",
+            color = Color(0xFF00164F),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
           )
         }
       }
 
-      Spacer(modifier = Modifier.height(32.dp))
-
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center
-      ) {
-        Text(
-          "New here? ",
-          color = Color(0xFFC3C5D8).copy(alpha = 0.7f),
-          fontSize = 14.sp
-        )
-        Text(
-          "Create account",
-          color = Color(0xFF49FCD9),
-          fontSize = 14.sp,
-          fontWeight = FontWeight.Bold,
-          modifier = Modifier.clickable { }
-        )
-      }
-
-      Spacer(modifier = Modifier.height(40.dp))
+      Spacer(modifier = Modifier.height(20.dp))
     }
   }
 }
@@ -2105,6 +2251,7 @@ fun SetupCompleteScreen(
 
 @Composable
 fun HomeScreen(
+  displayName: String = "",
   isAlarmActive: Boolean = false,
   onToggleAlarm: () -> Unit,
   onNavigateToProfile: () -> Unit,
@@ -2171,8 +2318,16 @@ fun HomeScreen(
             }
 
             Column {
+              val greeting = remember {
+                val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+                when {
+                  hour < 12 -> "Good morning"
+                  hour < 17 -> "Good afternoon"
+                  else -> "Good evening"
+                }
+              }
               Text(
-                "Good evening, John",
+                "$greeting, ${if (displayName.isNotBlank()) displayName else "Operator"}",
                 fontSize = 18.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = Color(0xFFE5E1E5)
@@ -2724,15 +2879,18 @@ fun HomeScreen(
 
 @Composable
 fun ProfileScreen(
-  biometricEnabled: Boolean,
-  twoFactorEnabled: Boolean,
-  alertConfigEnabled: Boolean,
-  onBiometricToggle: (Boolean) -> Unit,
-  onTwoFactorToggle: (Boolean) -> Unit,
-  onAlertConfigToggle: (Boolean) -> Unit,
-  onLockTriggered: () -> Unit,
-  onLogout: () -> Unit,
-  onNavigateToHome: () -> Unit
+  displayName: String = "",
+  googleEmail: String = "",
+  onDisplayNameChange: (String) -> Unit = {},
+  biometricEnabled: Boolean = false,
+  twoFactorEnabled: Boolean = false,
+  alertConfigEnabled: Boolean = false,
+  onBiometricToggle: (Boolean) -> Unit = {},
+  onTwoFactorToggle: (Boolean) -> Unit = {},
+  onAlertConfigToggle: (Boolean) -> Unit = {},
+  onLockTriggered: () -> Unit = {},
+  onLogout: () -> Unit = {},
+  onNavigateToHome: () -> Unit = {}
 ) {
   Scaffold(
     modifier = Modifier
@@ -2853,21 +3011,56 @@ fun ProfileScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        Text(
-          "ALEX VANCE",
-          fontSize = 28.sp,
-          fontWeight = FontWeight.ExtraBold,
-          letterSpacing = 1.sp,
-          color = Color(0xFFE5E1E5)
-        )
+        var editingName by remember { mutableStateOf(false) }
+        var tempName by remember { mutableStateOf(displayName) }
+
+        if (editingName) {
+          OutlinedTextField(
+            value = tempName,
+            onValueChange = { tempName = it },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            textStyle = LocalTextStyle.current.copy(fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp, color = Color(0xFFE5E1E5)),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedContainerColor = Color(0xFF0C0E1A).copy(alpha = 0.4f),
+              unfocusedContainerColor = Color.Transparent,
+              focusedBorderColor = Color(0xFF49FCD9),
+              unfocusedBorderColor = Color.Transparent,
+              cursorColor = Color(0xFF49FCD9)
+            ),
+            modifier = Modifier.fillMaxWidth()
+          )
+          Spacer(modifier = Modifier.height(4.dp))
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { editingName = false; tempName = displayName }) {
+              Text("Cancel", fontSize = 11.sp, color = Color(0xFFC3C5D8))
+            }
+            TextButton(onClick = { onDisplayNameChange(tempName); editingName = false }) {
+              Text("Save", fontSize = 11.sp, color = Color(0xFF49FCD9))
+            }
+          }
+        } else {
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              if (displayName.isNotBlank()) displayName.uppercase() else "OPERATOR",
+              fontSize = 28.sp,
+              fontWeight = FontWeight.ExtraBold,
+              letterSpacing = 1.sp,
+              color = Color(0xFFE5E1E5)
+            )
+            IconButton(onClick = { editingName = true; tempName = displayName }, modifier = Modifier.size(28.dp)) {
+              Icon(Icons.Default.Edit, contentDescription = "Edit name", tint = Color(0xFF8D90A1), modifier = Modifier.size(16.dp))
+            }
+          }
+        }
 
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-          "OPERATIVE ID: 893-X-11",
+          if (googleEmail.isNotBlank()) googleEmail else "No email",
           fontSize = 11.sp,
           fontWeight = FontWeight.Bold,
-          letterSpacing = 1.5.sp,
+          letterSpacing = 0.5.sp,
           color = Color(0xFFC3C5D8).copy(alpha = 0.5f)
         )
 
@@ -3404,7 +3597,7 @@ private fun FeatureCard(icon: ImageVector, title: String, desc: String, color: C
 @Composable fun _PreviewOnboarding() { OnboardingScreen(onContinue = {}, onSkip = {}) }
 
 @Preview(showBackground = true, backgroundColor = 0xFF050507, name = "Login")
-@Composable fun _PreviewLogin() { LoginScreen(email = "test@guardian.app", password = "", onEmailChange = {}, onPasswordChange = {}, onLoginSuccess = {}) }
+@Composable fun _PreviewLogin() { LoginScreen(onGoogleSignInClick = {}, isSigningIn = false) }
 
 @Preview(showBackground = true, backgroundColor = 0xFF050507, name = "Home")
 @Composable fun _PreviewHome() { HomeScreen(onToggleAlarm = {}, onNavigateToProfile = {}) }
