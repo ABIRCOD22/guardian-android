@@ -47,6 +47,14 @@
             android:showOnLockScreen="true"
             android:turnScreenOn="true" />
 
+        <activity
+            android:name=".ui.alarm.EmergencyAssistActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
+
         <service
             android:name=".services.ProtectionService"
             android:enabled="true"
@@ -58,6 +66,15 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <service
+            android:name=".services.FirebaseMessagingService"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".services.SecurePhoneAccessibilityService"

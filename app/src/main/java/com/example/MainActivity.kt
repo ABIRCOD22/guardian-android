@@ -11,6 +11,8 @@ import com.example.services.ProtectionService
 import com.example.services.SecurePhoneAccessibilityService
 import com.example.utils.AlarmHelper
 import com.example.utils.Constants
+import com.example.utils.FirestoreSync
+import com.example.utils.LocationHelper
 import com.example.utils.PermissionManager
 import com.example.utils.PinManager
 import com.example.ui.components.PinKeypad
@@ -109,11 +111,19 @@ fun GuardianApp() {
   val context = LocalContext.current
   val prefs = context.getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
   var setupComplete by remember { mutableStateOf(prefs.getBoolean("setup_complete", false)) }
+
+  LaunchedEffect(Unit) {
+    com.example.services.FirebaseMessagingService.refreshToken()
+  }
   val toggleAlarm: () -> Unit = {
     try {
       if (AlarmHelper.isArmed) {
         AlarmHelper.isArmed = false
         prefs.edit().putBoolean("protection_active", false).apply()
+        kotlinx.coroutines.MainScope().launch {
+          val loc = LocationHelper.getCurrentLocation(context)
+          FirestoreSync.updateAlarmStatus(context, false, loc)
+        }
         android.widget.Toast.makeText(context, "System disarmed", android.widget.Toast.LENGTH_SHORT).show()
       } else {
         val intent = Intent(context, com.example.ui.alarm.AlarmOverlayActivity::class.java).apply {
@@ -138,6 +148,8 @@ fun GuardianApp() {
       } else {
         context.startService(serviceIntent)
       }
+      val loc = LocationHelper.getLastKnownLocation(context)
+      FirestoreSync.updateAlarmStatus(context, true, loc)
     } else {
       prefs.edit().putBoolean("protection_active", false).apply()
       val stopIntent = Intent(context, ProtectionService::class.java).apply {

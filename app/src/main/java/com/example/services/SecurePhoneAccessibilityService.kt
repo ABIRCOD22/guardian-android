@@ -12,11 +12,18 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.example.ui.alarm.AlarmOverlayActivity
 import com.example.utils.AlarmHelper
 import com.example.utils.Constants
+import com.example.utils.FirestoreSync
+import com.example.utils.LocationHelper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class SecurePhoneAccessibilityService : AccessibilityService() {
   private var volumeUpCounter = 0
+  private var powerCounter = 0
   private val mainHandler = Handler(Looper.getMainLooper())
   private val volumeUpReset = Runnable { volumeUpCounter = 0 }
+  private val powerReset = Runnable { powerCounter = 0 }
 
   private val oemPowerPackages = hashSetOf(
     "com.samsung.android.globalactions",
@@ -125,6 +132,21 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
     }
   }
 
+  private fun triggerEmergencySiren() {
+    if (!AlarmHelper.isArmed) return
+    Log.w("A11yWatcher", "Triple power press — EMERGENCY TRIGGERED")
+    AlarmHelper.startSiren(this)
+    performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+    val intent = Intent(this, AlarmOverlayActivity::class.java).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    }
+    startActivity(intent)
+    CoroutineScope(Dispatchers.IO).launch {
+      val location = LocationHelper.getCurrentLocation(this@SecurePhoneAccessibilityService)
+      FirestoreSync.reportEmergency("Triple power press emergency trigger", location)
+    }
+  }
+
   override fun onInterrupt() {}
 
   override fun onKeyEvent(event: KeyEvent?): Boolean {
@@ -138,6 +160,14 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
             if (event.repeatCount == 0) {
               volumeUpCounter = 0
               mainHandler.removeCallbacks(volumeUpReset)
+              powerCounter++
+              mainHandler.removeCallbacks(powerReset)
+              mainHandler.postDelayed(powerReset, 2000L)
+              if (powerCounter >= 3) {
+                powerCounter = 0
+                mainHandler.removeCallbacks(powerReset)
+                triggerEmergencySiren()
+              }
             }
           }
         }
