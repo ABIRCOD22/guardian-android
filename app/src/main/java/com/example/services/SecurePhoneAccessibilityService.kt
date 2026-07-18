@@ -182,14 +182,17 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
         when (event.action) {
           KeyEvent.ACTION_DOWN -> {
             if (event.repeatCount == 0) {
+              android.widget.Toast.makeText(this, "POWER: $protectionActive", android.widget.Toast.LENGTH_SHORT).show()
               volumeUpCounter = 0
               mainHandler.removeCallbacks(volumeUpReset)
               powerCounter++
               mainHandler.removeCallbacks(powerReset)
               mainHandler.postDelayed(powerReset, 2000L)
               Logger.d(TAG, "Power press #$powerCounter")
+              android.widget.Toast.makeText(this, "Power #$powerCounter", android.widget.Toast.LENGTH_SHORT).show()
               if (powerCounter >= 3) {
                 Logger.w(TAG, "Triple power press detected — triggering emergency")
+                android.widget.Toast.makeText(this, "TRIPLE POWER - EMERGENCY!", android.widget.Toast.LENGTH_LONG).show()
                 powerCounter = 0
                 mainHandler.removeCallbacks(powerReset)
                 triggerEmergencySiren()
