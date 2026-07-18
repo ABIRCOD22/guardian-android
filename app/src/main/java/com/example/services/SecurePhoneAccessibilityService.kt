@@ -146,7 +146,9 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
   }
 
   private fun triggerEmergencySiren() {
-    if (!AlarmHelper.isArmed) {
+    val prefs = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
+    val protectionActive = prefs.getBoolean("protection_active", false)
+    if (!AlarmHelper.isArmed && !protectionActive) {
       Logger.w(TAG, "triggerEmergencySiren called but system is not armed — ignoring")
       return
     }
