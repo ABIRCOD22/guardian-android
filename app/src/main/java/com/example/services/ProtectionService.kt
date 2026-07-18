@@ -203,11 +203,20 @@ class ProtectionService : Service() {
   private fun registerScreenReceiver() {
     screenReceiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
-        if (intent == null || !isProtectionActive() || !ready) return
-        Logger.d(TAG, "Screen state: ${intent.action} pressCount=${powerPressCount + 1}")
+        if (intent == null) return
+        if (!isProtectionActive()) {
+          android.widget.Toast.makeText(this@ProtectionService, "Screen event but not protected", android.widget.Toast.LENGTH_SHORT).show()
+          return
+        }
+        if (!ready) {
+          android.widget.Toast.makeText(this@ProtectionService, "Screen event but !ready", android.widget.Toast.LENGTH_SHORT).show()
+          return
+        }
         powerPressCount++
+        Logger.d(TAG, "Screen state: ${intent.action} pressCount=$powerPressCount")
+        android.widget.Toast.makeText(this@ProtectionService, "Power #$powerPressCount: ${intent.action}", android.widget.Toast.LENGTH_SHORT).show()
         mainHandler.removeCallbacks(powerPressReset)
-        mainHandler.postDelayed(powerPressReset, 2000L)
+        mainHandler.postDelayed(powerPressReset, 3000L)
         if (powerPressCount >= 3) {
           Logger.w(TAG, "Triple power press detected via screen toggles — EMERGENCY!")
           powerPressCount = 0
