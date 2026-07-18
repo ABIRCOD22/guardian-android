@@ -252,7 +252,8 @@ class ProtectionService : Service() {
         }
       }
     }
-    registerReceiver(alarmStoppedReceiver, IntentFilter(Constants.ACTION_ALARM_STOPPED))
+    registerReceiver(alarmStoppedReceiver, IntentFilter(Constants.ACTION_ALARM_STOPPED),
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_NOT_EXPORTED else 0)
   }
 
   private fun registerProximitySensor() {
