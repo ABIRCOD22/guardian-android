@@ -97,13 +97,14 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
   }
 
   private fun triggerPowerDialogBreach() {
-    AlarmHelper.startSiren(this)
+    Logger.w(TAG, "triggerPowerDialogBreach — broadcasting emergency trigger to ProtectionService")
+    val intent = Intent(Constants.ACTION_EMERGENCY_TRIGGERED).apply {
+      putExtra("reason", "power_dialog_breach")
+    }
+    sendBroadcast(intent)
+    // Lock screen immediately for security
     performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
     performGlobalAction(GLOBAL_ACTION_BACK)
-    val lockIntent = Intent(this, AlarmOverlayActivity::class.java).apply {
-      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-    }
-    startActivity(lockIntent)
   }
 
   private fun dismissScreenPinningDialog() {

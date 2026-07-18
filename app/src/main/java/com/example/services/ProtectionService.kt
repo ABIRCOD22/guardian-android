@@ -35,11 +35,14 @@ class ProtectionService : Service() {
   private var usbReceiver: BroadcastReceiver? = null
   private var simReceiver: BroadcastReceiver? = null
   private var screenReceiver: BroadcastReceiver? = null
+  private var emergencyTriggerReceiver: BroadcastReceiver? = null
+  private var alarmStoppedReceiver: BroadcastReceiver? = null
   private var sensorManager: SensorManager? = null
   private var proximitySensor: Sensor? = null
   private var wasProximityNear = false
   private var ready = false
   private var powerPressCount = 0
+  private var pendingEmergencyRunnable: Runnable? = null
   private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
   private val powerPressReset = Runnable { powerPressCount = 0 }
 
@@ -51,7 +54,7 @@ class ProtectionService : Service() {
       val isNear = distance < maxRange * 0.5f
       if (wasProximityNear && !isNear) {
         Logger.i(TAG, "Proximity sensor triggered alarm (near->far transition)")
-        triggerAlarm("proximity")
+        triggerAlarmWithGracePeriod("proximity")
       }
       wasProximityNear = isNear
     }
@@ -68,6 +71,8 @@ class ProtectionService : Service() {
     registerUsbReceiver()
     registerSimReceiver()
     registerScreenReceiver()
+    registerEmergencyTriggerReceiver()
+    registerAlarmStoppedReceiver()
     registerProximitySensor()
     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
       ready = true
@@ -147,7 +152,7 @@ class ProtectionService : Service() {
         if (!ready || !isProtectionActive() || !AlarmHelper.monitoringEnabled) return
         if (intent.action == Intent.ACTION_POWER_DISCONNECTED) {
           Logger.w(TAG, "Power disconnected — triggering alarm")
-          triggerAlarm("power_disconnected")
+          triggerAlarmWithGracePeriod("power_disconnected")
         } else if (intent.action == Intent.ACTION_POWER_CONNECTED) {
           Logger.i(TAG, "Power connected (no action required)")
         }
@@ -171,7 +176,7 @@ class ProtectionService : Service() {
           Logger.i(TAG, "USB state changed — connected=$connected")
           if (connected) {
             Logger.w(TAG, "USB connected — triggering alarm")
-            triggerAlarm("usb_connected")
+            triggerAlarmWithGracePeriod("usb_connected")
           }
         }
       }
@@ -191,7 +196,7 @@ class ProtectionService : Service() {
           Logger.i(TAG, "SIM state changed — state=$state")
           if (state == "ABSENT" || state == "NOT_READY") {
             Logger.w(TAG, "SIM state=$state — triggering alarm")
-            triggerAlarm("sim_removed")
+            triggerAlarmWithGracePeriod("sim_removed")
           }
         }
       }
@@ -212,14 +217,7 @@ class ProtectionService : Service() {
           Logger.w(TAG, "Rapid power presses detected via screen toggles — EMERGENCY!")
           powerPressCount = 0
           mainHandler.removeCallbacks(powerPressReset)
-          AlarmHelper.startSiren(this@ProtectionService)
-          startActivity(Intent(this@ProtectionService, AlarmOverlayActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-          })
-          GlobalScope.launch {
-            val loc = LocationHelper.getCurrentLocation(this@ProtectionService)
-            FirestoreSync.reportEmergencyWithAlarm("Rapid power press emergency trigger", loc)
-          }
+          triggerAlarmWithGracePeriod("rapid_power_press")
         }
       }
     }
@@ -229,6 +227,32 @@ class ProtectionService : Service() {
     }
     registerReceiver(screenReceiver, filter, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0)
     Logger.i(TAG, "Screen on/off receiver registered for power press detection")
+  }
+
+  private fun registerEmergencyTriggerReceiver() {
+    emergencyTriggerReceiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context?, intent: Intent?) {
+        if (intent == null) return
+        val reason = intent.getStringExtra("reason") ?: "emergency_trigger"
+        Logger.w(TAG, "Emergency trigger broadcast received — reason=$reason")
+        triggerAlarmWithGracePeriod(reason)
+      }
+    }
+    val filter = IntentFilter(Constants.ACTION_EMERGENCY_TRIGGERED)
+    registerReceiver(emergencyTriggerReceiver, filter,
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0)
+  }
+
+  private fun registerAlarmStoppedReceiver() {
+    alarmStoppedReceiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context?, intent: Intent?) {
+        if (intent?.action == Constants.ACTION_ALARM_STOPPED) {
+          Logger.w(TAG, "Alarm stopped — cancelling pending emergency")
+          cancelPendingEmergency()
+        }
+      }
+    }
+    registerReceiver(alarmStoppedReceiver, IntentFilter(Constants.ACTION_ALARM_STOPPED))
   }
 
   private fun registerProximitySensor() {
@@ -246,16 +270,29 @@ class ProtectionService : Service() {
     }
   }
 
-  private fun triggerAlarm(reason: String = "breach") {
-    Logger.w(TAG, "triggerAlarm — starting AlarmOverlayActivity (reason=$reason)")
-    GlobalScope.launch {
-      val loc = LocationHelper.getCurrentLocation(this@ProtectionService)
-      FirestoreSync.reportAlarmBreach(reason, loc)
-    }
-    val intent = Intent(this, AlarmOverlayActivity::class.java).apply {
+  private fun triggerAlarmWithGracePeriod(reason: String) {
+    Logger.w(TAG, "triggerAlarmWithGracePeriod — starting siren + overlay (reason=$reason)")
+    AlarmHelper.startSiren(this)
+    startActivity(Intent(this, AlarmOverlayActivity::class.java).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    })
+    cancelPendingEmergency()
+    val runnable = Runnable {
+      Logger.w(TAG, "Grace period expired (15s) — writing emergency to Firestore")
+      GlobalScope.launch {
+        val loc = LocationHelper.getCurrentLocation(this@ProtectionService)
+        FirestoreSync.reportEmergencyWithAlarm(reason, loc)
+      }
+      pendingEmergencyRunnable = null
     }
-    startActivity(intent)
+    pendingEmergencyRunnable = runnable
+    mainHandler.postDelayed(runnable, 15000L)
+  }
+
+  private fun cancelPendingEmergency() {
+    pendingEmergencyRunnable?.let { mainHandler.removeCallbacks(it) }
+    pendingEmergencyRunnable = null
+    AlarmHelper.stopSiren(this)
   }
 
   override fun onDestroy() {
@@ -271,6 +308,12 @@ class ProtectionService : Service() {
     }
     screenReceiver?.let {
       try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering screenReceiver", e) }
+    }
+    emergencyTriggerReceiver?.let {
+      try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering emergencyTriggerReceiver", e) }
+    }
+    alarmStoppedReceiver?.let {
+      try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering alarmStoppedReceiver", e) }
     }
     try { sensorManager?.unregisterListener(proximityListener) } catch (e: Exception) { Logger.e(TAG, "Error unregistering proximityListener", e) }
     super.onDestroy()
