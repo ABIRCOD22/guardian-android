@@ -40,6 +40,10 @@ class ProtectionService : Service() {
   override fun onCreate() {
     super.onCreate()
     Logger.logLifecycle(TAG, "onCreate")
+    getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE).edit()
+      .remove(Constants.PREFS_POWER_PRESS_TIME)
+      .remove(Constants.PREFS_VOL_UP_PRESS_TIME)
+      .apply()
     createNotificationChannel()
     registerPowerReceiver()
     registerUsbReceiver()
@@ -181,7 +185,7 @@ class ProtectionService : Service() {
   private fun registerScreenReceiver() {
     screenReceiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
-        if (intent == null || !isProtectionActive() || !ready) return
+        if (intent == null || !isProtectionActive()) return
         val now = System.currentTimeMillis()
         val prefs = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
         prefs.edit().putLong(Constants.PREFS_POWER_PRESS_TIME, now).apply()

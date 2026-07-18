@@ -189,7 +189,11 @@ fun GuardianApp() {
   LaunchedEffect(AlarmHelper.isArmed) {
     if (AlarmHelper.isArmed) {
       Logger.i(tag, "isArmed became true — starting ProtectionService + periodic location")
-      prefs.edit().putBoolean("protection_active", true).apply()
+      prefs.edit()
+        .putBoolean("protection_active", true)
+        .remove("power_press_time")
+        .remove("vol_up_press_time")
+        .apply()
       val serviceIntent = Intent(context, ProtectionService::class.java).apply {
         action = ProtectionService.ACTION_START
       }
@@ -204,7 +208,11 @@ fun GuardianApp() {
       Logger.i(tag, "ProtectionService started, alarm status reported, location tracking active")
     } else {
       Logger.i(tag, "isArmed became false — stopping ProtectionService + periodic location")
-      prefs.edit().putBoolean("protection_active", false).apply()
+      prefs.edit()
+        .putBoolean("protection_active", false)
+        .remove("power_press_time")
+        .remove("vol_up_press_time")
+        .apply()
       val stopIntent = Intent(context, ProtectionService::class.java).apply {
         action = ProtectionService.ACTION_STOP
       }

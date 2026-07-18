@@ -73,7 +73,12 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
        className.contains("power_off", ignoreCase = true)))
     if (!isPowerDialog) return
 
-    Logger.w(TAG, "Power dialog detected — setting power press flag")
+    Logger.w(TAG, "Power dialog detected")
+
+    val pActive = getPrefs().getBoolean("protection_active", false)
+    if (!AlarmHelper.isArmed && !pActive) return
+
+    Logger.w(TAG, "System is armed — setting power press flag")
 
     if (AlarmHelper.isSirenActive) {
       Logger.w(TAG, "Siren active — collapsing power dialog")
