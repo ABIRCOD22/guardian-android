@@ -26,18 +26,9 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
 
   private var volumeUpCounter = 0
   private var powerCounter = 0
-  private var powerDialogCounter = 0
   private val mainHandler = Handler(Looper.getMainLooper())
   private val volumeUpReset = Runnable { volumeUpCounter = 0; Logger.d(TAG, "volumeUpCounter reset") }
   private val powerReset = Runnable { powerCounter = 0; Logger.d(TAG, "powerCounter reset") }
-  private val dialogReset = Runnable { powerDialogCounter = 0; Logger.d(TAG, "powerDialogCounter reset") }
-  private val singlePressBreach = Runnable {
-    if (powerDialogCounter in 1..2) {
-      Logger.w(TAG, "Single/double power dialog — treating as breach attempt")
-      triggerPowerDialogBreach()
-    }
-    powerDialogCounter = 0
-  }
 
   private val oemPowerPackages = hashSetOf(
     "com.samsung.android.globalactions",
@@ -100,22 +91,9 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
       .getBoolean("protection_active", false)
     if (!isArmed) return
 
-    // Count sequential power dialog appearances
-    powerDialogCounter++
-    mainHandler.removeCallbacks(dialogReset)
-    mainHandler.removeCallbacks(singlePressBreach)
-    mainHandler.postDelayed(dialogReset, 3000L)
-
-    Logger.w(TAG, "Power dialog #$powerDialogCounter")
-
-    if (powerDialogCounter >= 3) {
-      Logger.w(TAG, "Triple power dialog — triggering emergency!")
-      triggerPowerDialogBreach()
-      return
-    }
-
-    // Single press detected — if no more presses in 1.5s, treat as breach
-    mainHandler.postDelayed(singlePressBreach, 1500L)
+    // Power dialog while armed = EMERGENCY (fallback for Samsung power-menu devices)
+    Logger.w(TAG, "Power dialog while armed — EMERGENCY!")
+    triggerPowerDialogBreach()
   }
 
   private fun triggerPowerDialogBreach() {

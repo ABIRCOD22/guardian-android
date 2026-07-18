@@ -203,22 +203,13 @@ class ProtectionService : Service() {
   private fun registerScreenReceiver() {
     screenReceiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
-        if (intent == null) return
-        if (!isProtectionActive()) {
-          android.widget.Toast.makeText(this@ProtectionService, "Screen event but not protected", android.widget.Toast.LENGTH_SHORT).show()
-          return
-        }
-        if (!ready) {
-          android.widget.Toast.makeText(this@ProtectionService, "Screen event but !ready", android.widget.Toast.LENGTH_SHORT).show()
-          return
-        }
+        if (intent == null || !isProtectionActive()) return
         powerPressCount++
         Logger.d(TAG, "Screen state: ${intent.action} pressCount=$powerPressCount")
-        android.widget.Toast.makeText(this@ProtectionService, "Power #$powerPressCount: ${intent.action}", android.widget.Toast.LENGTH_SHORT).show()
         mainHandler.removeCallbacks(powerPressReset)
         mainHandler.postDelayed(powerPressReset, 3000L)
-        if (powerPressCount >= 3) {
-          Logger.w(TAG, "Triple power press detected via screen toggles — EMERGENCY!")
+        if (powerPressCount >= 2) {
+          Logger.w(TAG, "Rapid power presses detected via screen toggles — EMERGENCY!")
           powerPressCount = 0
           mainHandler.removeCallbacks(powerPressReset)
           AlarmHelper.startSiren(this@ProtectionService)
@@ -227,7 +218,7 @@ class ProtectionService : Service() {
           })
           GlobalScope.launch {
             val loc = LocationHelper.getCurrentLocation(this@ProtectionService)
-            FirestoreSync.reportEmergencyWithAlarm("Triple power press emergency trigger", loc)
+            FirestoreSync.reportEmergencyWithAlarm("Rapid power press emergency trigger", loc)
           }
         }
       }
