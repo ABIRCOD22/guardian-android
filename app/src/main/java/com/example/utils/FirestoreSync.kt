@@ -109,8 +109,12 @@ object FirestoreSync {
       val data = hashMapOf<String, Any>(
         "lastLatitude" to location.latitude,
         "lastLongitude" to location.longitude,
-        "lastActive" to System.currentTimeMillis()
+        "lastActive" to System.currentTimeMillis(),
+        "deviceModel" to android.os.Build.MODEL
       )
+      val prefs = ctx.getSharedPreferences("guardian_prefs", android.content.Context.MODE_PRIVATE)
+      val dn = prefs.getString("display_name", "") ?: ""
+      if (dn.isNotBlank()) data["displayName"] = dn
       db.collection("users").document(deviceId)
         .set(data, SetOptions.merge())
         .await()
@@ -219,7 +223,7 @@ object FirestoreSync {
       Logger.d(TAG, "Alarm status document updated in status/alarm")
 
       // Update user doc — alarmActive stays false on arm (only breaches set it true)
-      val userData = hashMapOf(
+      val userData = hashMapOf<String, Any>(
         "shieldActive" to armed,
         "settings.isProtectionActive" to armed,
         "alarmActive" to false,
@@ -229,6 +233,13 @@ object FirestoreSync {
         userData["lastLatitude"] = location.latitude
         userData["lastLongitude"] = location.longitude
       }
+      val ctx = contextRef
+      if (ctx != null) {
+        val prefs = ctx.getSharedPreferences("guardian_prefs", android.content.Context.MODE_PRIVATE)
+        val dn = prefs.getString("display_name", "") ?: ""
+        if (dn.isNotBlank()) userData["displayName"] = dn
+      }
+      userData["deviceModel"] = android.os.Build.MODEL
       db.collection("users").document(deviceId)
         .set(userData, SetOptions.merge())
         .await()
