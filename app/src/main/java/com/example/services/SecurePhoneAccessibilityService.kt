@@ -2,6 +2,7 @@ package com.example.services
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Context
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
@@ -169,8 +170,10 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
 
   override fun onKeyEvent(event: KeyEvent?): Boolean {
     if (event == null) return false
-    Logger.d(TAG, "onKeyEvent keyCode=${event.keyCode} action=${event.action} isArmed=${AlarmHelper.isArmed} sirenActive=${AlarmHelper.isSirenActive}")
-    if (!AlarmHelper.isArmed) return super.onKeyEvent(event)
+    val prefs = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
+    val protectionActive = prefs.getBoolean("protection_active", false)
+    Logger.d(TAG, "onKeyEvent keyCode=${event.keyCode} action=${event.action} isArmed=${AlarmHelper.isArmed} prefsActive=$protectionActive sirenActive=${AlarmHelper.isSirenActive}")
+    if (!AlarmHelper.isArmed && !protectionActive) return super.onKeyEvent(event)
 
     when (event.keyCode) {
       KeyEvent.KEYCODE_POWER -> {
