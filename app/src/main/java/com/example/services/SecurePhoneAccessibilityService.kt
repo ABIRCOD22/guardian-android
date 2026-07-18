@@ -160,11 +160,11 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
     when (event.keyCode) {
 
       KeyEvent.KEYCODE_VOLUME_DOWN -> {
-        if (event.action == KeyEvent.ACTION_DOWN) {
+        if (event.action == KeyEvent.ACTION_DOWN && AlarmHelper.isSirenActive) {
           Logger.d(TAG, "Volume down pressed during siren — sending shake broadcast")
           sendBroadcast(Intent(Constants.ACTION_ALARM_SHAKE))
         }
-        return true
+        return false
       }
 
       KeyEvent.KEYCODE_VOLUME_UP -> {
@@ -178,20 +178,22 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
             sendEmergencyBroadcast("power_volume_up_combo")
             return true
           }
-          volumeUpCounter++
-          mainHandler.removeCallbacks(volumeUpReset)
-          mainHandler.postDelayed(volumeUpReset, 3000L)
-          Logger.d(TAG, "Volume up press #$volumeUpCounter")
-          if (volumeUpCounter >= 3) {
-            Logger.w(TAG, "Triple volume up — silencing siren")
-            volumeUpCounter = 0
+          if (AlarmHelper.isSirenActive) {
+            volumeUpCounter++
             mainHandler.removeCallbacks(volumeUpReset)
-            AlarmHelper.stopSiren()
-            sendBroadcast(Intent(Constants.ACTION_ALARM_STOPPED))
-            val i = Intent(this, AlarmOverlayActivity::class.java).apply {
-              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            mainHandler.postDelayed(volumeUpReset, 3000L)
+            Logger.d(TAG, "Volume up press #$volumeUpCounter")
+            if (volumeUpCounter >= 3) {
+              Logger.w(TAG, "Triple volume up — silencing siren")
+              volumeUpCounter = 0
+              mainHandler.removeCallbacks(volumeUpReset)
+              AlarmHelper.stopSiren()
+              sendBroadcast(Intent(Constants.ACTION_ALARM_STOPPED))
+              val i = Intent(this, AlarmOverlayActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              }
+              startActivity(i)
             }
-            startActivity(i)
           }
         }
         return false
