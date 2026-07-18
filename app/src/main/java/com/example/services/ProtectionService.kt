@@ -8,10 +8,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -37,31 +33,11 @@ class ProtectionService : Service() {
   private var screenReceiver: BroadcastReceiver? = null
   private var emergencyTriggerReceiver: BroadcastReceiver? = null
   private var alarmStoppedReceiver: BroadcastReceiver? = null
-  private var sensorManager: SensorManager? = null
-  private var proximitySensor: Sensor? = null
-  private var wasProximityNear = false
   private var ready = false
   private var powerPressCount = 0
   private var pendingEmergencyRunnable: Runnable? = null
   private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
   private val powerPressReset = Runnable { powerPressCount = 0 }
-
-  private val proximityListener = object : SensorEventListener {
-    override fun onSensorChanged(event: SensorEvent) {
-      if (!isProtectionActive() || !ready) return
-      val distance = event.values[0]
-      val maxRange = proximitySensor?.maximumRange ?: return
-      val isNear = distance < maxRange * 0.5f
-      if (wasProximityNear && !isNear) {
-        Logger.i(TAG, "Proximity sensor triggered alarm (near->far transition)")
-        triggerAlarmWithGracePeriod("proximity")
-      }
-      wasProximityNear = isNear
-    }
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-      Logger.d(TAG, "Proximity accuracy changed to $accuracy")
-    }
-  }
 
   override fun onCreate() {
     super.onCreate()
@@ -73,7 +49,6 @@ class ProtectionService : Service() {
     registerScreenReceiver()
     registerEmergencyTriggerReceiver()
     registerAlarmStoppedReceiver()
-    registerProximitySensor()
     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
       ready = true
       Logger.i(TAG, "Ready flag set to true after 2s delay")
@@ -257,21 +232,6 @@ class ProtectionService : Service() {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_NOT_EXPORTED else 0)
   }
 
-  private fun registerProximitySensor() {
-    sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
-    proximitySensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
-    if (proximitySensor != null) {
-      Logger.i(TAG, "Proximity sensor registered (maxRange=${proximitySensor?.maximumRange})")
-      sensorManager?.registerListener(
-        proximityListener,
-        proximitySensor,
-        SensorManager.SENSOR_DELAY_NORMAL
-      )
-    } else {
-      Logger.w(TAG, "No proximity sensor available on this device")
-    }
-  }
-
   private fun triggerAlarmWithGracePeriod(reason: String) {
     Logger.w(TAG, "triggerAlarmWithGracePeriod — starting siren + overlay (reason=$reason)")
     // Cancel any previous pending emergency runnable without stopping current siren
@@ -303,7 +263,7 @@ class ProtectionService : Service() {
   }
 
   override fun onDestroy() {
-    Logger.logLifecycle(TAG, "onDestroy — unregistering receivers and sensor listener")
+    Logger.logLifecycle(TAG, "onDestroy — unregistering receivers")
     powerReceiver?.let {
       try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering powerReceiver", e) }
     }
@@ -322,7 +282,7 @@ class ProtectionService : Service() {
     alarmStoppedReceiver?.let {
       try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering alarmStoppedReceiver", e) }
     }
-    try { sensorManager?.unregisterListener(proximityListener) } catch (e: Exception) { Logger.e(TAG, "Error unregistering proximityListener", e) }
+    Logger.logLifecycle(TAG, "onDestroy — unregistering complete")
     super.onDestroy()
   }
 
