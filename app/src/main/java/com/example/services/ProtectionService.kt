@@ -199,10 +199,9 @@ class ProtectionService : Service() {
     val filter = IntentFilter().apply {
       addAction(Intent.ACTION_SCREEN_ON)
       addAction(Intent.ACTION_SCREEN_OFF)
-      addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
     }
     registerReceiver(screenReceiver, filter, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0)
-    Logger.i(TAG, "Screen receiver registered for power press detection (SCREEN_ON/OFF + CLOSE_SYSTEM_DIALOGS)")
+    Logger.i(TAG, "Screen receiver registered for power press detection")
   }
 
   private fun registerEmergencyTriggerReceiver() {
