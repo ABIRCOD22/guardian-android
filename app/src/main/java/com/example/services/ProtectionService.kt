@@ -183,7 +183,7 @@ class ProtectionService : Service() {
   private fun registerScreenReceiver() {
     screenReceiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
-        if (intent == null || !isProtectionActive()) return
+        if (intent == null || !isProtectionActive() || !ready) return
         powerPressCount++
         Logger.d(TAG, "Screen state: ${intent.action} pressCount=$powerPressCount")
         mainHandler.removeCallbacks(powerPressReset)
