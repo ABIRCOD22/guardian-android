@@ -273,11 +273,15 @@ class ProtectionService : Service() {
 
   private fun triggerAlarmWithGracePeriod(reason: String) {
     Logger.w(TAG, "triggerAlarmWithGracePeriod — starting siren + overlay (reason=$reason)")
+    // Cancel any previous pending emergency runnable without stopping current siren
+    pendingEmergencyRunnable?.let { mainHandler.removeCallbacks(it) }
+    pendingEmergencyRunnable = null
+    // Start siren and show overlay
     AlarmHelper.startSiren(this)
     startActivity(Intent(this, AlarmOverlayActivity::class.java).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     })
-    cancelPendingEmergency()
+    // Schedule emergency Firestore write in 15s
     val runnable = Runnable {
       Logger.w(TAG, "Grace period expired (15s) — writing emergency to Firestore")
       GlobalScope.launch {
@@ -293,7 +297,6 @@ class ProtectionService : Service() {
   private fun cancelPendingEmergency() {
     pendingEmergencyRunnable?.let { mainHandler.removeCallbacks(it) }
     pendingEmergencyRunnable = null
-    AlarmHelper.stopSiren(this)
   }
 
   override fun onDestroy() {
