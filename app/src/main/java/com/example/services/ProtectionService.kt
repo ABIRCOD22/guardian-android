@@ -48,7 +48,7 @@ class ProtectionService : Service() {
 
   private val proximityListener = object : SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
-      if (!isProtectionActive()) return
+      if (!isProtectionActive() || !ready) return
       val distance = event.values[0]
       val maxRange = proximitySensor?.maximumRange ?: return
       val isNear = distance < maxRange * 0.5f
