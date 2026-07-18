@@ -224,9 +224,10 @@ class ProtectionService : Service() {
     val filter = IntentFilter().apply {
       addAction(Intent.ACTION_SCREEN_ON)
       addAction(Intent.ACTION_SCREEN_OFF)
+      addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
     }
     registerReceiver(screenReceiver, filter, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0)
-    Logger.i(TAG, "Screen on/off receiver registered for power press detection")
+    Logger.i(TAG, "Screen receiver registered for power press detection (SCREEN_ON/OFF + CLOSE_SYSTEM_DIALOGS)")
   }
 
   private fun registerEmergencyTriggerReceiver() {
@@ -276,10 +277,12 @@ class ProtectionService : Service() {
     // Cancel any previous pending emergency runnable without stopping current siren
     pendingEmergencyRunnable?.let { mainHandler.removeCallbacks(it) }
     pendingEmergencyRunnable = null
-    // Start siren and show overlay
+    // Start siren and show overlay with grace end time
     AlarmHelper.startSiren(this)
+    val graceEnd = System.currentTimeMillis() + 15000L
     startActivity(Intent(this, AlarmOverlayActivity::class.java).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+      putExtra(Constants.EXTRA_GRACE_END_TIME, graceEnd)
     })
     // Schedule emergency Firestore write in 15s
     val runnable = Runnable {

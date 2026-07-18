@@ -156,6 +156,7 @@ class AlarmOverlayActivity : ComponentActivity() {
 
     setContent {
       AlarmLockScreenContent(
+        graceEndTime = intent?.getLongExtra(Constants.EXTRA_GRACE_END_TIME, 0L) ?: 0L,
         onPinComplete = { pin -> verifyAndUnlock(pin, armOnly) },
         onCancel = { finish() }
       )
@@ -344,6 +345,7 @@ class AlarmOverlayActivity : ComponentActivity() {
 
 @Composable
 private fun AlarmLockScreenContent(
+  graceEndTime: Long,
   onPinComplete: (String) -> Unit,
   onCancel: () -> Unit
 ) {
@@ -357,6 +359,18 @@ private fun AlarmLockScreenContent(
     while (true) {
       currentTimeString = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
       delay(1000)
+    }
+  }
+
+  var remainingSeconds by remember { mutableStateOf(0) }
+  LaunchedEffect(graceEndTime) {
+    if (graceEndTime > 0L) {
+      while (true) {
+        val remaining = (graceEndTime - System.currentTimeMillis()) / 1000
+        remainingSeconds = if (remaining > 0) remaining.toInt() else 0
+        if (remaining <= 0) break
+        delay(1000)
+      }
     }
   }
 
@@ -458,6 +472,18 @@ private fun AlarmLockScreenContent(
         textAlign = TextAlign.Center
       )
       Spacer(Modifier.height(14.dp))
+
+      if (graceEndTime > 0L && remainingSeconds > 0) {
+        Text(
+          if (remainingSeconds <= 5) "⚠ EMERGENCY DISPATCH IN ${remainingSeconds}s ⚠" else "Emergency dispatch in ${remainingSeconds}s",
+          fontSize = if (remainingSeconds <= 5) 14.sp else 12.sp,
+          fontWeight = if (remainingSeconds <= 5) FontWeight.ExtraBold else FontWeight.Bold,
+          color = if (remainingSeconds <= 5) Color(0xFFFF5167) else successGlowColor.copy(alpha = 0.8f),
+          letterSpacing = 1.sp,
+          textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(12.dp))
+      }
 
       Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(vertical = 10.dp)) {
         repeat(4) { idx ->
