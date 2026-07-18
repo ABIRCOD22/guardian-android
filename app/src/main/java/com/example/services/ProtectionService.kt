@@ -36,6 +36,7 @@ class ProtectionService : Service() {
   private var ready = false
   private var powerPressCount = 0
   private var pendingEmergencyRunnable: Runnable? = null
+  private var lastScreenEventTime = 0L
   private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
   private val powerPressReset = Runnable { powerPressCount = 0 }
 
@@ -184,6 +185,9 @@ class ProtectionService : Service() {
     screenReceiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context?, intent: Intent?) {
         if (intent == null || !isProtectionActive() || !ready) return
+        val now = System.currentTimeMillis()
+        if (now - lastScreenEventTime < 600) return
+        lastScreenEventTime = now
         powerPressCount++
         Logger.d(TAG, "Screen state: ${intent.action} pressCount=$powerPressCount")
         mainHandler.removeCallbacks(powerPressReset)
