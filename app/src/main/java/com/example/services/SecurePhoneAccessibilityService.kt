@@ -158,7 +158,7 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
     startActivity(intent)
     CoroutineScope(Dispatchers.IO).launch {
       val location = LocationHelper.getCurrentLocation(this@SecurePhoneAccessibilityService)
-      FirestoreSync.reportEmergency("Triple power press emergency trigger", location)
+      FirestoreSync.reportEmergencyWithAlarm("Triple power press emergency trigger", location)
       Logger.i(TAG, "Emergency reported to Firestore")
     }
   }
@@ -169,8 +169,8 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
 
   override fun onKeyEvent(event: KeyEvent?): Boolean {
     if (event == null) return false
-    Logger.d(TAG, "onKeyEvent keyCode=${event.keyCode} action=${event.action} sirenActive=${AlarmHelper.isSirenActive}")
-    if (!AlarmHelper.isSirenActive) return super.onKeyEvent(event)
+    Logger.d(TAG, "onKeyEvent keyCode=${event.keyCode} action=${event.action} isArmed=${AlarmHelper.isArmed} sirenActive=${AlarmHelper.isSirenActive}")
+    if (!AlarmHelper.isArmed) return super.onKeyEvent(event)
 
     when (event.keyCode) {
       KeyEvent.KEYCODE_POWER -> {

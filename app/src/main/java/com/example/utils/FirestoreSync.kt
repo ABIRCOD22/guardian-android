@@ -161,6 +161,42 @@ object FirestoreSync {
     }
   }
 
+  // Emergency with alarmActive=true — sets both user doc flag + emergencies collection
+  suspend fun reportEmergencyWithAlarm(message: String, location: DeviceLocation?) {
+    Logger.w(TAG, "reportEmergencyWithAlarm message=\"$message\"")
+    try {
+      val ctx = contextRef ?: return
+      val deviceId = getDeviceId(ctx)
+      val data = hashMapOf<String, Any>(
+        "alarmActive" to true,
+        "lastActive" to System.currentTimeMillis(),
+        "breachReason" to message
+      )
+      if (location != null) {
+        data["lastLatitude"] = location.latitude
+        data["lastLongitude"] = location.longitude
+      }
+      db.collection("users").document(deviceId)
+        .set(data, SetOptions.merge())
+        .await()
+      Logger.i(TAG, "alarmActive=true set on user doc for emergency")
+
+      val emergency = hashMapOf(
+        "type" to "emergency",
+        "message" to message,
+        "timestamp" to System.currentTimeMillis(),
+        "latitude" to (location?.latitude ?: 0.0),
+        "longitude" to (location?.longitude ?: 0.0),
+        "deviceId" to deviceId,
+        "status" to "active"
+      )
+      db.collection("emergencies").add(emergency).await()
+      Logger.i(TAG, "Emergency added to emergencies collection with alarmActive=true")
+    } catch (e: Exception) {
+      Logger.e(TAG, "reportEmergencyWithAlarm failed", e)
+    }
+  }
+
   // Context reference for reportLocation
   private var contextRef: Context? = null
   fun setContext(context: Context) { contextRef = context }

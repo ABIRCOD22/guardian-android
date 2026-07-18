@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.example.MainActivity
 import com.example.ui.alarm.AlarmOverlayActivity
 import com.example.utils.AlarmHelper
@@ -74,6 +75,7 @@ class FirebaseMessagingService : com.google.firebase.messaging.FirebaseMessaging
       "siren" -> handleSiren(data)
       "locate" -> handleLocate()
       "emergency" -> handleEmergency(data)
+      "nearby_emergency" -> handleNearbyEmergency(data)
       "ping" -> handlePing()
       else -> Logger.w(TAG, "Unknown command: $command")
     }
@@ -164,6 +166,77 @@ class FirebaseMessagingService : com.google.firebase.messaging.FirebaseMessaging
       FirestoreSync.reportEvent("pong", location)
       Logger.i(TAG, "Pong event reported to Firestore")
     }
+  }
+
+  private fun handleNearbyEmergency(data: Map<String, String>) {
+    val emergencyId = data["emergencyId"] ?: return
+    val victimName = data["victimName"] ?: "Someone"
+    val latitude = data["latitude"] ?: "0"
+    val longitude = data["longitude"] ?: "0"
+    val victimDeviceId = data["victimDeviceId"] ?: ""
+    val distance = data["distance"] ?: "?"
+    val message = data["message"] ?: "Emergency nearby"
+    Logger.w(TAG, "handleNearbyEmergency — victim=$victimName dist=${distance}km id=$emergencyId")
+
+    // Save to SharedPreferences so MainActivity can pick it up
+    val prefs = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
+    prefs.edit()
+      .putString("nearby_emergency_id", emergencyId)
+      .putString("nearby_victim_name", victimName)
+      .putString("nearby_latitude", latitude)
+      .putString("nearby_longitude", longitude)
+      .putString("nearby_victim_device_id", victimDeviceId)
+      .putString("nearby_distance", distance)
+      .putString("nearby_message", message)
+      .putLong("nearby_timestamp", System.currentTimeMillis())
+      .apply()
+
+    showNearbyEmergencyNotification(victimName, distance, emergencyId, latitude, longitude, victimDeviceId, message)
+  }
+
+  private fun showNearbyEmergencyNotification(
+    victimName: String, distance: String, emergencyId: String,
+    latitude: String, longitude: String, victimDeviceId: String, message: String
+  ) {
+    val channelId = "guardian_nearby_emergency"
+    val notificationManager = getSystemService(NotificationManager::class.java)
+
+    val intent = Intent(this, MainActivity::class.java).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+      putExtra("action", "nearby_emergency")
+      putExtra("emergencyId", emergencyId)
+      putExtra("victimName", victimName)
+      putExtra("latitude", latitude)
+      putExtra("longitude", longitude)
+      putExtra("victimDeviceId", victimDeviceId)
+      putExtra("distance", distance)
+      putExtra("message", message)
+    }
+    val pendingIntent = PendingIntent.getActivity(
+      this, emergencyId.hashCode(), intent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+
+    val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+    val builder = NotificationCompat.Builder(this, channelId)
+      .setSmallIcon(android.R.drawable.ic_dialog_info)
+      .setContentTitle("\uD83D\uDEA8 Emergency Nearby: $victimName")
+      .setContentText("${distance}km away — tap to respond")
+      .setAutoCancel(true)
+      .setSound(soundUri)
+      .setContentIntent(pendingIntent)
+      .setPriority(NotificationCompat.PRIORITY_HIGH)
+      .setCategory(NotificationCompat.CATEGORY_ALARM)
+
+    notificationManager?.createNotificationChannel(
+      android.app.NotificationChannel(
+        channelId, "Nearby Emergencies",
+        android.app.NotificationManager.IMPORTANCE_HIGH
+      ).apply {
+        description = "Alerts for emergencies near your location"
+      }
+    )
+    notificationManager?.notify(System.currentTimeMillis().toInt(), builder.build())
   }
 
   private fun showNotification(title: String, body: String) {

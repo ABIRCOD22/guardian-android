@@ -67,6 +67,7 @@ import coil.request.ImageRequest
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -104,7 +105,8 @@ enum class GuardianScreen {
   PERMISSION_COMPLETE,
   HOME,
   PROFILE,
-  SETUP_PIN
+  SETUP_PIN,
+  NEARBY_EMERGENCY
 }
 
 @Composable
@@ -120,6 +122,13 @@ fun GuardianApp() {
     FirestoreSync.setContext(context)
     Logger.i(tag, "App launched — Logger initialized, refreshing FCM token")
     com.example.services.FirebaseMessagingService.refreshToken()
+    // Check if opened from a nearby emergency notification
+    val activity = context as? ComponentActivity
+    val intentAction = activity?.intent?.getStringExtra("action")
+    if (intentAction == "nearby_emergency") {
+      Logger.w(tag, "Nearby emergency intent detected — switching screen")
+      currentScreen = GuardianScreen.NEARBY_EMERGENCY
+    }
   }
 
   var showLocationDialog by remember { mutableStateOf(false) }
@@ -401,6 +410,18 @@ fun GuardianApp() {
             onToggleAlarm = toggleAlarm,
             onNavigateToProfile = { Logger.i(tag, "Home -> PROFILE"); currentScreen = GuardianScreen.PROFILE },
             onNavigateToPinSetup = { Logger.i(tag, "Home -> SETUP_PIN"); currentScreen = GuardianScreen.SETUP_PIN }
+          )
+        }
+        GuardianScreen.NEARBY_EMERGENCY -> {
+          LaunchedEffect(screen) { Logger.i(tag, "Screen: NEARBY_EMERGENCY") }
+          NearbyEmergencyScreen(
+            onDismiss = {
+              prefs.edit().remove("nearby_emergency_id").remove("nearby_victim_name")
+                .remove("nearby_latitude").remove("nearby_longitude")
+                .remove("nearby_victim_device_id").remove("nearby_distance").remove("nearby_message")
+                .remove("nearby_timestamp").apply()
+              currentScreen = if (setupComplete) GuardianScreen.HOME else GuardianScreen.PERMISSION_NOTIFICATION
+            }
           )
         }
         GuardianScreen.PROFILE -> {
@@ -3585,6 +3606,173 @@ private fun FeatureCard(icon: ImageVector, title: String, desc: String, color: C
       }
       Spacer(Modifier.width(4.dp))
       Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color(0xFF8D90A1).copy(alpha = 0.4f), modifier = Modifier.size(16.dp))
+    }
+  }
+}
+
+// ── Nearby Emergency Screen ──────────────────────────────────────
+@Composable
+fun NearbyEmergencyScreen(onDismiss: () -> Unit) {
+  val context = LocalContext.current
+  val prefs = context.getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
+  var emergencyId by remember { mutableStateOf(prefs.getString("nearby_emergency_id", "") ?: "") }
+  var victimName by remember { mutableStateOf(prefs.getString("nearby_victim_name", "Someone") ?: "Someone") }
+  var latitude by remember { mutableStateOf(prefs.getString("nearby_latitude", "0") ?: "0") }
+  var longitude by remember { mutableStateOf(prefs.getString("nearby_longitude", "0") ?: "0") }
+  var victimDeviceId by remember { mutableStateOf(prefs.getString("nearby_victim_device_id", "") ?: "") }
+  var distance by remember { mutableStateOf(prefs.getString("nearby_distance", "?") ?: "?") }
+  var hasAccepted by remember { mutableStateOf(false) }
+  var liveLat by remember { mutableStateOf(latitude) }
+  var liveLng by remember { mutableStateOf(longitude) }
+  var lastSeen by remember { mutableStateOf("") }
+  var isResponding by remember { mutableStateOf(false) }
+
+  // Poll victim's live location from Firestore every 15s
+  if (victimDeviceId.isNotBlank()) {
+    LaunchedEffect(victimDeviceId) {
+      while (true) {
+        try {
+          val victimDoc = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            .collection("users").document(victimDeviceId).get().await()
+          val llat = victimDoc.getDouble("lastLatitude")
+          val llng = victimDoc.getDouble("lastLongitude")
+          if (llat != null) liveLat = llat.toString()
+          if (llng != null) liveLng = llng.toString()
+          val activeTs = victimDoc.getLong("lastActive") ?: 0L
+          if (activeTs > 0L) {
+            val sec = (System.currentTimeMillis() - activeTs) / 1000L
+            lastSeen = if (sec < 60L) "${sec}s ago" else if (sec < 3600L) "${sec / 60L}m ago" else "${sec / 3600L}h ago"
+          }
+        } catch (_: Exception) {}
+        kotlinx.coroutines.delay(15000)
+      }
+    }
+  }
+
+  Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A0B14))) {
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+      // Header
+      Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color(0xFFC3C5D8),
+          modifier = Modifier.clickable { onDismiss() }.size(28.dp))
+        Spacer(Modifier.width(12.dp))
+        Text("\uD83D\uDEA8 Emergency Nearby", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE5E1E5))
+      }
+      Spacer(Modifier.height(8.dp))
+      Text("$distance km away \u00B7 $lastSeen", fontSize = 13.sp, color = Color(0xFF8D90A1))
+
+      Spacer(Modifier.height(24.dp))
+
+      // Victim info card
+      Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF131316)),
+        border = androidx.compose.foundation.BorderStroke(0.5.dp, Color(0xFFFF1744).copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(16.dp)
+      ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(12.dp).clip(CircleShape).background(Color(0xFFFF1744)))
+            Spacer(Modifier.width(8.dp))
+            Text("Victim", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color(0xFFFF1744).copy(alpha = 0.8f),
+              letterSpacing = 1.sp)
+          }
+          Spacer(Modifier.height(12.dp))
+          Text(victimName, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE5E1E5))
+          Spacer(Modifier.height(8.dp))
+          Text("Lat: $liveLat", fontSize = 13.sp, color = Color(0xFFC3C5D8))
+          Text("Lng: $liveLng", fontSize = 13.sp, color = Color(0xFFC3C5D8))
+          Spacer(Modifier.height(4.dp))
+          Text("Last seen: $lastSeen", fontSize = 12.sp, color = Color(0xFF8D90A1))
+        }
+      }
+
+      Spacer(Modifier.height(24.dp))
+
+      // Responder info card (after accept)
+      if (hasAccepted) {
+        Card(
+          modifier = Modifier.fillMaxWidth(),
+          colors = CardDefaults.cardColors(containerColor = Color(0xFF131316)),
+          border = androidx.compose.foundation.BorderStroke(0.5.dp, Color(0xFF00f59b).copy(alpha = 0.3f)),
+          shape = RoundedCornerShape(16.dp)
+        ) {
+          Column(modifier = Modifier.padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF00f59b), modifier = Modifier.size(20.dp))
+              Spacer(Modifier.width(8.dp))
+              Text("You're responding!", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00f59b))
+            }
+            Spacer(Modifier.height(12.dp))
+            Button(
+              onClick = {
+                try {
+                  val uri = android.net.Uri.parse("geo:$liveLat,$liveLng?q=$liveLat,$liveLng")
+                  context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                } catch (e: Exception) {
+                  android.widget.Toast.makeText(context, "Google Maps not available", android.widget.Toast.LENGTH_SHORT).show()
+                }
+              },
+              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1a73e8)),
+              modifier = Modifier.fillMaxWidth().height(48.dp),
+              shape = RoundedCornerShape(12.dp)
+            ) {
+              Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.width(8.dp))
+              Text("Navigate on Google Maps", fontWeight = FontWeight.SemiBold)
+            }
+          }
+        }
+      }
+
+      Spacer(Modifier.weight(1f))
+
+      // Accept button (only before accept)
+      if (!hasAccepted) {
+        Button(
+          onClick = {
+            if (!isResponding) {
+              isResponding = true
+              val deviceId = prefs.getString("device_id", "") ?: ""
+              val name = prefs.getString("display_name", "") ?: ""
+              kotlinx.coroutines.MainScope().launch {
+                try {
+                  val url = java.net.URL("https://guardian-admin-mbck.onrender.com/api/emergencies/accept")
+                  val conn = url.openConnection() as java.net.HttpURLConnection
+                  conn.requestMethod = "POST"
+                  conn.setRequestProperty("Content-Type", "application/json")
+                  conn.doOutput = true
+                  val json = """{"emergencyId":"$emergencyId","deviceId":"$deviceId","displayName":"$name"}"""
+                  conn.outputStream.write(json.toByteArray())
+                  val code = conn.responseCode
+                  conn.disconnect()
+                  if (code in 200..299) {
+                    hasAccepted = true
+                    android.widget.Toast.makeText(context, "Response registered! You're on the way.", android.widget.Toast.LENGTH_LONG).show()
+                  } else {
+                    android.widget.Toast.makeText(context, "Failed to register response", android.widget.Toast.LENGTH_SHORT).show()
+                  }
+                } catch (e: Exception) {
+                  android.widget.Toast.makeText(context, "Error: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                isResponding = false
+              }
+            }
+          },
+          enabled = !isResponding,
+          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF1744)),
+          modifier = Modifier.fillMaxWidth().height(56.dp),
+          shape = RoundedCornerShape(16.dp)
+        ) {
+          if (isResponding) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+          } else {
+            Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Accept Response", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+          }
+        }
+      }
     }
   }
 }
