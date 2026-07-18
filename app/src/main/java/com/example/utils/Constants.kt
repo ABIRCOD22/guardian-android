@@ -10,4 +10,6 @@ object Constants {
   const val CHANNEL_PROTECTION = "guardian_protection_channel"
   const val CHANNEL_SIREN = "guardian_siren_channel"
   const val MAX_PIN_ATTEMPTS = 5
+  const val PREFS_POWER_PRESS_TIME = "power_press_time"
+  const val PREFS_VOL_UP_PRESS_TIME = "vol_up_press_time"
 }

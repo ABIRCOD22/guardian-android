@@ -34,11 +34,8 @@ class ProtectionService : Service() {
   private var emergencyTriggerReceiver: BroadcastReceiver? = null
   private var alarmStoppedReceiver: BroadcastReceiver? = null
   private var ready = false
-  private var powerPressCount = 0
   private var pendingEmergencyRunnable: Runnable? = null
-  private var lastScreenEventTime = 0L
   private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-  private val powerPressReset = Runnable { powerPressCount = 0 }
 
   override fun onCreate() {
     super.onCreate()
@@ -186,17 +183,14 @@ class ProtectionService : Service() {
       override fun onReceive(context: Context?, intent: Intent?) {
         if (intent == null || !isProtectionActive() || !ready) return
         val now = System.currentTimeMillis()
-        if (now - lastScreenEventTime < 600) return
-        lastScreenEventTime = now
-        powerPressCount++
-        Logger.d(TAG, "Screen state: ${intent.action} pressCount=$powerPressCount")
-        mainHandler.removeCallbacks(powerPressReset)
-        mainHandler.postDelayed(powerPressReset, 3000L)
-        if (powerPressCount >= 2) {
-          Logger.w(TAG, "Rapid power presses detected via screen toggles — EMERGENCY!")
-          powerPressCount = 0
-          mainHandler.removeCallbacks(powerPressReset)
-          triggerAlarmWithGracePeriod("rapid_power_press")
+        val prefs = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putLong(Constants.PREFS_POWER_PRESS_TIME, now).apply()
+        Logger.d(TAG, "Screen toggled (power press) — checking Volume Up combo")
+        val volUpTime = prefs.getLong(Constants.PREFS_VOL_UP_PRESS_TIME, 0)
+        if (now - volUpTime in 1..2000) {
+          Logger.w(TAG, "Volume Up + Power combo detected — EMERGENCY!")
+          prefs.edit().remove(Constants.PREFS_POWER_PRESS_TIME).remove(Constants.PREFS_VOL_UP_PRESS_TIME).apply()
+          triggerAlarmWithGracePeriod("volume_up_power_combo")
         }
       }
     }
@@ -205,7 +199,7 @@ class ProtectionService : Service() {
       addAction(Intent.ACTION_SCREEN_OFF)
     }
     registerReceiver(screenReceiver, filter, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0)
-    Logger.i(TAG, "Screen receiver registered for power press detection")
+    Logger.i(TAG, "Screen receiver registered (sets power press flag for Vol+Power combo)")
   }
 
   private fun registerEmergencyTriggerReceiver() {

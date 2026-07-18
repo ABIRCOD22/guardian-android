@@ -12,12 +12,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.example.ui.alarm.AlarmOverlayActivity
 import com.example.utils.AlarmHelper
 import com.example.utils.Constants
-import com.example.utils.FirestoreSync
-import com.example.utils.LocationHelper
 import com.example.utils.Logger
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 class SecurePhoneAccessibilityService : AccessibilityService() {
   companion object {
@@ -25,10 +20,8 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
   }
 
   private var volumeUpCounter = 0
-  private var powerCounter = 0
   private val mainHandler = Handler(Looper.getMainLooper())
   private val volumeUpReset = Runnable { volumeUpCounter = 0; Logger.d(TAG, "volumeUpCounter reset") }
-  private val powerReset = Runnable { powerCounter = 0; Logger.d(TAG, "powerCounter reset") }
 
   private val oemPowerPackages = hashSetOf(
     "com.samsung.android.globalactions",
@@ -42,6 +35,9 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
     "com.sec.android.android.systemui",
     "com.sec.android.globalactions"
   )
+
+  private fun getPrefs() = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
+  private fun now() = System.currentTimeMillis()
 
   override fun onServiceConnected() {
     super.onServiceConnected()
@@ -75,11 +71,9 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
        className.contains("restart", ignoreCase = true) ||
        className.contains("poweroff", ignoreCase = true) ||
        className.contains("power_off", ignoreCase = true)))
-    Logger.d(TAG, "isPowerDialog=$isPowerDialog (pkg=$packageName matches OEM set=${oemPowerPackages.contains(packageName)})")
-
     if (!isPowerDialog) return
 
-    Logger.w(TAG, "Detected power dialog — package: $packageName class: $className")
+    Logger.w(TAG, "Power dialog detected — setting power press flag")
 
     if (AlarmHelper.isSirenActive) {
       Logger.w(TAG, "Siren active — collapsing power dialog")
@@ -87,22 +81,22 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
       return
     }
 
-    val isArmed = AlarmHelper.isArmed && getSharedPreferences("guardian_prefs", MODE_PRIVATE)
-      .getBoolean("protection_active", false)
-    if (!isArmed) return
-
-    // Power dialog while armed = EMERGENCY (fallback for Samsung power-menu devices)
-    Logger.w(TAG, "Power dialog while armed — EMERGENCY!")
-    triggerPowerDialogBreach()
+    val prefs = getPrefs()
+    val t = now()
+    prefs.edit().putLong(Constants.PREFS_POWER_PRESS_TIME, t).apply()
+    val volUpTime = prefs.getLong(Constants.PREFS_VOL_UP_PRESS_TIME, 0)
+    if (t - volUpTime in 1..2000) {
+      Logger.w(TAG, "Volume Up + Power combo via power dialog — EMERGENCY!")
+      prefs.edit().remove(Constants.PREFS_POWER_PRESS_TIME).remove(Constants.PREFS_VOL_UP_PRESS_TIME).apply()
+      sendEmergencyBroadcast("volume_up_power_combo")
+    }
   }
 
-  private fun triggerPowerDialogBreach() {
-    Logger.w(TAG, "triggerPowerDialogBreach — broadcasting emergency trigger to ProtectionService")
+  private fun sendEmergencyBroadcast(reason: String) {
     val intent = Intent(Constants.ACTION_EMERGENCY_TRIGGERED).apply {
-      putExtra("reason", "power_dialog_breach")
+      putExtra("reason", reason)
     }
     sendBroadcast(intent)
-    // Lock screen immediately for security
     performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
     performGlobalAction(GLOBAL_ACTION_BACK)
   }
@@ -152,61 +146,18 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
     }
   }
 
-  private fun triggerEmergencySiren() {
-    val prefs = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
-    val protectionActive = prefs.getBoolean("protection_active", false)
-    if (!AlarmHelper.isArmed && !protectionActive) {
-      Logger.w(TAG, "triggerEmergencySiren called but system is not armed — ignoring")
-      return
-    }
-    Logger.w(TAG, "Triple power press — EMERGENCY TRIGGERED")
-    AlarmHelper.startSiren(this)
-    performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
-    val intent = Intent(this, AlarmOverlayActivity::class.java).apply {
-      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-    }
-    startActivity(intent)
-    CoroutineScope(Dispatchers.IO).launch {
-      val location = LocationHelper.getCurrentLocation(this@SecurePhoneAccessibilityService)
-      FirestoreSync.reportEmergencyWithAlarm("Triple power press emergency trigger", location)
-      Logger.i(TAG, "Emergency reported to Firestore")
-    }
-  }
-
   override fun onInterrupt() {
     Logger.d(TAG, "onInterrupt")
   }
 
   override fun onKeyEvent(event: KeyEvent?): Boolean {
     if (event == null) return false
-    val prefs = getSharedPreferences("guardian_prefs", Context.MODE_PRIVATE)
+    val prefs = getPrefs()
     val protectionActive = prefs.getBoolean("protection_active", false)
     Logger.d(TAG, "onKeyEvent keyCode=${event.keyCode} action=${event.action} isArmed=${AlarmHelper.isArmed} prefsActive=$protectionActive sirenActive=${AlarmHelper.isSirenActive}")
     if (!AlarmHelper.isArmed && !protectionActive) return super.onKeyEvent(event)
 
     when (event.keyCode) {
-      KeyEvent.KEYCODE_POWER -> {
-        when (event.action) {
-          KeyEvent.ACTION_DOWN -> {
-            if (event.repeatCount == 0) {
-
-              volumeUpCounter = 0
-              mainHandler.removeCallbacks(volumeUpReset)
-              powerCounter++
-              mainHandler.removeCallbacks(powerReset)
-              mainHandler.postDelayed(powerReset, 2000L)
-              Logger.d(TAG, "Power press #$powerCounter")
-              if (powerCounter >= 3) {
-                Logger.w(TAG, "Triple power press detected — triggering emergency")
-                powerCounter = 0
-                mainHandler.removeCallbacks(powerReset)
-                triggerEmergencySiren()
-              }
-            }
-          }
-        }
-        return true
-      }
 
       KeyEvent.KEYCODE_VOLUME_DOWN -> {
         if (event.action == KeyEvent.ACTION_DOWN) {
@@ -218,10 +169,19 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
 
       KeyEvent.KEYCODE_VOLUME_UP -> {
         if (event.action == KeyEvent.ACTION_DOWN) {
+          val t = now()
+          prefs.edit().putLong(Constants.PREFS_VOL_UP_PRESS_TIME, t).apply()
+          val powerTime = prefs.getLong(Constants.PREFS_POWER_PRESS_TIME, 0)
+          if (t - powerTime in 1..2000) {
+            Logger.w(TAG, "Power + Volume Up combo detected — EMERGENCY!")
+            prefs.edit().remove(Constants.PREFS_POWER_PRESS_TIME).remove(Constants.PREFS_VOL_UP_PRESS_TIME).apply()
+            sendEmergencyBroadcast("power_volume_up_combo")
+            return true
+          }
           volumeUpCounter++
           mainHandler.removeCallbacks(volumeUpReset)
           mainHandler.postDelayed(volumeUpReset, 3000L)
-          Logger.d(TAG, "Volume up press #$volumeUpCounter (needs 3 to silence)")
+          Logger.d(TAG, "Volume up press #$volumeUpCounter")
           if (volumeUpCounter >= 3) {
             Logger.w(TAG, "Triple volume up — silencing siren")
             volumeUpCounter = 0
