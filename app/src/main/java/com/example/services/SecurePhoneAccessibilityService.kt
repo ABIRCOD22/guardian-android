@@ -86,9 +86,9 @@ class SecurePhoneAccessibilityService : AccessibilityService() {
       return
     }
 
-    if (getSharedPreferences("guardian_prefs", MODE_PRIVATE)
+    if (AlarmHelper.isArmed && getSharedPreferences("guardian_prefs", MODE_PRIVATE)
         .getBoolean("protection_active", false)) {
-      Logger.w(TAG, "Power-off attempt while protected — EMERGENCY! Starting siren and lock screen")
+      Logger.w(TAG, "Power-off attempt while armed — EMERGENCY! Starting siren and lock screen")
       AlarmHelper.startSiren(this)
       performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
       performGlobalAction(GLOBAL_ACTION_BACK)
