@@ -34,10 +34,14 @@ class ProtectionService : Service() {
   private var powerReceiver: BroadcastReceiver? = null
   private var usbReceiver: BroadcastReceiver? = null
   private var simReceiver: BroadcastReceiver? = null
+  private var screenReceiver: BroadcastReceiver? = null
   private var sensorManager: SensorManager? = null
   private var proximitySensor: Sensor? = null
   private var wasProximityNear = false
   private var ready = false
+  private var powerPressCount = 0
+  private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+  private val powerPressReset = Runnable { powerPressCount = 0 }
 
   private val proximityListener = object : SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
@@ -63,6 +67,7 @@ class ProtectionService : Service() {
     registerPowerReceiver()
     registerUsbReceiver()
     registerSimReceiver()
+    registerScreenReceiver()
     registerProximitySensor()
     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
       ready = true
@@ -195,6 +200,37 @@ class ProtectionService : Service() {
     registerReceiver(simReceiver, filter, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0)
   }
 
+  private fun registerScreenReceiver() {
+    screenReceiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context?, intent: Intent?) {
+        if (intent == null || !isProtectionActive() || !ready) return
+        Logger.d(TAG, "Screen state: ${intent.action} pressCount=${powerPressCount + 1}")
+        powerPressCount++
+        mainHandler.removeCallbacks(powerPressReset)
+        mainHandler.postDelayed(powerPressReset, 2000L)
+        if (powerPressCount >= 3) {
+          Logger.w(TAG, "Triple power press detected via screen toggles — EMERGENCY!")
+          powerPressCount = 0
+          mainHandler.removeCallbacks(powerPressReset)
+          AlarmHelper.startSiren(this@ProtectionService)
+          startActivity(Intent(this@ProtectionService, AlarmOverlayActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+          })
+          GlobalScope.launch {
+            val loc = LocationHelper.getCurrentLocation(this@ProtectionService)
+            FirestoreSync.reportEmergencyWithAlarm("Triple power press emergency trigger", loc)
+          }
+        }
+      }
+    }
+    val filter = IntentFilter().apply {
+      addAction(Intent.ACTION_SCREEN_ON)
+      addAction(Intent.ACTION_SCREEN_OFF)
+    }
+    registerReceiver(screenReceiver, filter, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0)
+    Logger.i(TAG, "Screen on/off receiver registered for power press detection")
+  }
+
   private fun registerProximitySensor() {
     sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
     proximitySensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
@@ -232,6 +268,9 @@ class ProtectionService : Service() {
     }
     simReceiver?.let {
       try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering simReceiver", e) }
+    }
+    screenReceiver?.let {
+      try { unregisterReceiver(it) } catch (e: Exception) { Logger.e(TAG, "Error unregistering screenReceiver", e) }
     }
     try { sensorManager?.unregisterListener(proximityListener) } catch (e: Exception) { Logger.e(TAG, "Error unregistering proximityListener", e) }
     super.onDestroy()
